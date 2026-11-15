@@ -160,7 +160,7 @@ class VoiceRouter:
         if done:
             yield " " + job.result().text
             return
-        where = "Пришлю результат в Telegram." if self.notifier.available else "Результат будет в журнале."
+        where = f"Пришлю результат в {self.notifier.where()}." if self.notifier.available else "Результат будет в журнале."
         yield " Это займёт больше времени. " + where
         self._background.add(job)
         job.add_done_callback(lambda j: self._finished_later(j, task))
@@ -171,7 +171,7 @@ class VoiceRouter:
             return
         exc = job.exception()
         text = f"Ошибка: {exc}" if exc else job.result().text
-        t = asyncio.get_running_loop().create_task(self.notifier.send(f"Готово: {task[:100]}\n\n{text}"))
+        t = asyncio.get_running_loop().create_task(self.notifier.send(f"Готово: {task[:100]}\n\n{text}", title="Задача готова"))
         self._background.add(t)
         t.add_done_callback(self._background.discard)
 

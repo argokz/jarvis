@@ -1,6 +1,7 @@
 # Jarvis — ядро личного ассистента
 
-Один «мозг» на Claude Agent SDK, память в Obsidian-vault, клиенты — Telegram, HTTP API и голос на ПК.
+Один «мозг» на Claude Agent SDK, память в Obsidian-vault, клиенты — Telegram, голос на ПК и приложение
+(Tauri 2 + Vue 3: Windows, macOS, Android; то же приложение открывается в браузере).
 
 ## Запуск
 
@@ -67,6 +68,69 @@ uv run --extra voice python -m jarvis.voice_client
 Wake word пока английский — встроенная модель openWakeWord `hey_jarvis`. Своё слово
 (например, «Джарвис») — это отдельно обученная .onnx-модель, её путь передаётся в `--wake-model`.
 
+## Приложение (этап 3)
+
+Один Vue-клиент в `app/` для всего: окно Tauri на Windows/macOS, APK для Android и обычная
+веб-страница, которую ядро раздаёт по адресу `/app/`.
+
+- **Чат** — общий разговор из всех каналов в реальном времени: написали в Telegram — сообщение
+  сразу видно в приложении. Текст уходит агенту (Sonnet), кнопка 🎙 — голосом через быстрый
+  контур (Haiku) с озвучкой. Удерживать — говорить; короткое касание — «нажал, сказал, нажал».
+  Нажатие во время ответа перебивает его.
+- **Задачи** — запросы подтверждения с кнопками и лента действий агента (инструменты, отказы, решения).
+- **Проекты** — реестр из frontmatter, обновляется сам, когда агент правит заметку.
+- **Настройки** — адрес ядра и токен, новый разговор.
+
+### Подтверждения
+Перезапись целиком существующей заметки в `10_Projects/`, `20_Areas/`, `30_Decisions/` агент
+делает только после вашего «да». Запрос приходит сразу в приложение, в Telegram (с кнопками) и
+push-напоминанием в ntfy; ответить можно где удобнее. Нет ответа 5 минут — значит «нет».
+Это тот же механизм, через который на этапе 5 пойдут деплой в прод и merge.
+
+### Запуск
+
+```bash
+cd app && npm install
+npm run build              # веб-версия → app/dist, ядро раздаёт её на /app/
+npm run tauri dev          # окно приложения с горячей перезагрузкой
+npm run tauri build        # установщик: .msi/.exe на Windows, .dmg на macOS
+```
+
+Для `tauri build` нужен Rust (rustup), на Windows — ещё Microsoft C++ Build Tools и WebView2
+(в Windows 10/11 уже есть).
+
+### Android (в том числе Huawei без Google-сервисов)
+
+1. Android Studio с SDK и NDK; переменные `JAVA_HOME`, `ANDROID_HOME`, `NDK_HOME`;
+   `rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android`.
+2. `npm run tauri android init` — создаст `app/src-tauri/gen/android`.
+3. В `gen/android/app/src/main/AndroidManifest.xml` добавить
+   `<uses-permission android:name="android.permission.RECORD_AUDIO"/>` и
+   `<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>`.
+4. `npm run tauri android build -- --apk --debug` и поставить APK на телефон.
+
+Микрофон на Android при первом нажатии 🎙 спросит разрешение. Распознавание всё равно идёт на
+сервере (SpeechKit), поэтому отсутствие Google-сервисов на Huawei не мешает.
+
+### Доступ с телефона: Tailscale
+
+Ядро наружу не открываем. На ПК с ядром и на телефоне — Tailscale (на Huawei — APK с
+tailscale.com или F-Droid). На ПК:
+
+```bash
+tailscale serve --bg 8000
+```
+
+Получится адрес `https://<имя-пк>.<tailnet>.ts.net` — его и вписываем в настройках приложения.
+HTTPS обязателен: без него браузер не даст микрофон, а Android-сборка не пустит `ws://`.
+Тот же адрес с `/app/` в браузере телефона — полноценная веб-версия (можно «добавить на главный экран»).
+
+### Push: ntfy
+Поставьте приложение ntfy (APK или F-Droid — работает без GMS), подпишитесь на тему из
+`NTFY_TOPIC` и отключите для ntfy оптимизацию батареи. Push приходит, когда нужно
+подтверждение и когда голосовая задача доделалась в фоне. В push нет ссылок и кодов, которыми
+можно что-то подтвердить: тема на ntfy.sh публичная для всех, кто знает её имя.
+
 ## HTTP API
 
 | Метод | Путь | Что делает |
@@ -75,7 +139,11 @@ Wake word пока английский — встроенная модель op
 | POST | `/chat` `{"text": "...", "channel": "pc"}` | ход агента |
 | POST | `/session/new` | новый разговор |
 | GET | `/projects` | реестр проектов (JSON) |
+| GET | `/messages?limit=100` | общий разговор из всех каналов |
 | GET | `/journal?limit=50` | последние записи журнала |
+| GET | `/confirmations` | ожидающие подтверждения |
+| POST | `/confirmations/{id}` `{"approve": true}` | ответить на подтверждение |
+| WS | `/events/ws` | живая лента: реплики, инструменты, подтверждения |
 | WS | `/voice/ws` | голосовой протокол (описан в `jarvis/voice.py`) |
 
 Все, кроме `/health`, требуют `Authorization: Bearer $JARVIS_API_TOKEN` (WebSocket — также `?token=`).
@@ -83,5 +151,6 @@ Wake word пока английский — встроенная модель op
 ## Тесты
 
 ```bash
-uv run pytest -q
+uv run --extra voice pytest -q
+cd app && npm test
 ```

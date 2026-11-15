@@ -39,6 +39,15 @@ class Settings:
     speechkit_voice: str = field(default_factory=lambda: os.getenv("YANDEX_SPEECHKIT_VOICE", "alena"))
     speechkit_tts_rate: int = field(default_factory=lambda: int(os.getenv("YANDEX_SPEECHKIT_TTS_RATE", "48000")))
     speechkit_folder: str = field(default_factory=lambda: os.getenv("YANDEX_FOLDER_ID", ""))
+    # Push через ntfy (self-hosted или ntfy.sh); приложение ntfy работает на Android без GMS
+    ntfy_url: str = field(default_factory=lambda: os.getenv("NTFY_URL", ""))
+    ntfy_topic: str = field(default_factory=lambda: os.getenv("NTFY_TOPIC", ""))
+    ntfy_token: str = field(default_factory=lambda: os.getenv("NTFY_TOKEN", ""))
+    # Откуда браузерным клиентам можно ходить в API (Tauri и dev-сервер Vite — по умолчанию)
+    cors_origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv(
+        "JARVIS_CORS_ORIGINS",
+        "http://localhost:5173,tauri://localhost,http://tauri.localhost,https://tauri.localhost",
+    ).split(",") if x.strip()))
     # Голос: быстрый контур
     router_model: str = field(default_factory=lambda: os.getenv("JARVIS_ROUTER_MODEL", "claude-haiku-5-5"))
     router_effort: str = field(default_factory=lambda: os.getenv("JARVIS_ROUTER_EFFORT", "low"))

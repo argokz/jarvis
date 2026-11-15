@@ -83,7 +83,10 @@ class FakeNotifier(Notifier):
     def available(self):
         return True
 
-    async def send(self, text):
+    def where(self):
+        return "Telegram"
+
+    async def send(self, text, **kw):
         self.sent.append(text)
 
 

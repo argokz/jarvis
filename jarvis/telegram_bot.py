@@ -6,7 +6,7 @@ import logging
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from . import registry
@@ -30,7 +30,7 @@ def chunks(text: str, limit: int = LIMIT):
         text = text[cut:].lstrip("\n")
 
 
-def build(settings: Settings, brain: Brain, speech: SpeechKit) -> tuple[Bot, Dispatcher]:
+def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) -> tuple[Bot, Dispatcher]:
     bot = Bot(settings.telegram_token)
     dp = Dispatcher()
 
@@ -42,6 +42,17 @@ def build(settings: Settings, brain: Brain, speech: SpeechKit) -> tuple[Bot, Dis
             reply = await brain.ask(OWNER, text, channel="telegram")
         for part in chunks(reply.text):
             await m.answer(part)
+
+    @dp.callback_query(F.data.startswith("cf:"))
+    async def on_confirm(q: CallbackQuery):
+        if not q.from_user or q.from_user.id not in settings.telegram_allowed or confirms is None:
+            return await q.answer("Нет доступа")
+        _, cid, verdict = q.data.split(":", 2)
+        ok = confirms.resolve(cid, verdict == "y", by="telegram")
+        await q.answer("Принято" if ok else "Уже неактуально")
+        if q.message:
+            mark = ("✅ Подтверждено" if verdict == "y" else "❌ Отклонено") if ok else "⌛ Неактуально"
+            await q.message.edit_text(f"{q.message.text}\n\n{mark}")
 
     @dp.message(~F.func(allowed))
     async def stranger(m: Message):

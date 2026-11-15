@@ -26,6 +26,8 @@ from .store import Store
 FILE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit"]
 WRITE_TOOLS = {"Write", "Edit"}
 READONLY_FILES = {"90_Agent/policies.md"}
+# перезапись целиком существующих заметок здесь — только с подтверждения пользователя
+CONFIRM_OVERWRITE = ("10_Projects/", "20_Areas/", "30_Decisions/")
 
 SYSTEM = """Ты — Джарвис, личный ассистент одного пользователя. Отвечай по-русски (или на языке \
 вопроса), коротко и по делу, простым текстом без Markdown-разметки: ответ могут озвучить голосом.
@@ -82,10 +84,21 @@ def slugify(text: str, limit: int = 40) -> str:
     return slug[:limit].strip("-") or "note"
 
 
+def needs_confirm(vault: Path, tool_name: str, tool_input: dict) -> str | None:
+    """Относительный путь, если Write перезаписывает важную существующую заметку."""
+    if tool_name != "Write" or not tool_input.get("file_path"):
+        return None
+    target = Path(tool_input["file_path"])
+    target = (target if target.is_absolute() else vault / target).resolve()
+    rel = target.relative_to(vault).as_posix()
+    return rel if target.exists() and rel.startswith(CONFIRM_OVERWRITE) else None
+
+
 class Brain:
-    def __init__(self, settings: Settings, store: Store):
+    def __init__(self, settings: Settings, store: Store, confirm=None):
         self.s = settings
         self.store = store
+        self.confirm = confirm  # Confirmations или None (тогда перезапись важных заметок запрещена)
         self.vault = settings.vault
         registry.ensure_vault(self.vault)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -145,17 +158,27 @@ class Brain:
 
     # --- опции --------------------------------------------------------------
     def _options(self, user_id: str, channel: str, resume: str | None) -> ClaudeAgentOptions:
-        vault, store, journal = self.vault, self.store, self._journal_note
+        vault, store, journal, confirm = self.vault, self.store, self._journal_note, self.confirm
+
+        def deny(name: str, reason: str) -> dict:
+            store.log(user_id, channel, "denied", name, {"reason": reason})
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                           "permissionDecisionReason": reason}}
 
         async def guard(input_data, tool_use_id, context):
             name = input_data["tool_name"]
             if name in FILE_TOOLS:
-                reason = check_path(vault, name, input_data.get("tool_input") or {})
+                inp = input_data.get("tool_input") or {}
+                reason = check_path(vault, name, inp)
                 if reason:
-                    store.log(user_id, channel, "denied", name, {"reason": reason})
-                    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                   "permissionDecision": "deny",
-                                                   "permissionDecisionReason": reason}}
+                    return deny(name, reason)
+                rel = needs_confirm(vault, name, inp)
+                if rel:
+                    if confirm is None:
+                        return deny(name, f"перезапись {rel} требует подтверждения, а оно не настроено; используй Edit")
+                    preview = str(inp.get("content", ""))[:600]
+                    if not await confirm.ask(f"Перезаписать заметку {rel} целиком?", preview, channel=channel):
+                        return deny(name, f"пользователь не подтвердил перезапись {rel}; используй точечный Edit")
             return {}
 
         async def audit(input_data, tool_use_id, context):
@@ -191,7 +214,7 @@ class Brain:
             strict_mcp_config=True,
             setting_sources=[],          # не подхватывать настройки/CLAUDE.md с диска
             hooks={
-                "PreToolUse": [HookMatcher(hooks=[guard])],
+                "PreToolUse": [HookMatcher(hooks=[guard], timeout=330)],  # ждёт подтверждения до 5 минут
                 "PostToolUse": [HookMatcher(hooks=[audit])],
             },
             max_turns=self.s.max_turns,
