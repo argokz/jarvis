@@ -43,8 +43,32 @@ class Store:
             (time.time(), user_id, channel, kind, name, text),
         )
 
+    def history(self, user_id: str, limit: int = 24) -> list[tuple[str, str]]:
+        """Реплики (role, text) по порядку, без внутренних каналов «*-agent» и пустых."""
+        cur = self.db.execute(
+            "SELECT kind, payload FROM journal WHERE user_id=? AND kind IN ('user','assistant') "
+            "AND (channel IS NULL OR channel NOT LIKE '%-agent') ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        )
+        out = []
+        for kind, payload in reversed(cur.fetchall()):
+            text = _text(payload)
+            if text.strip():
+                out.append((kind, text))
+        return out
+
     def recent(self, limit: int = 50) -> list[dict]:
         cur = self.db.execute(
             "SELECT ts,user_id,channel,kind,name,payload FROM journal ORDER BY id DESC LIMIT ?", (limit,)
         )
         return [dict(zip(("ts", "user_id", "channel", "kind", "name", "payload"), r)) for r in cur]
+
+
+def _text(payload: str | None) -> str:
+    if not payload:
+        return ""
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return payload
+    return str(data.get("text") or "") if isinstance(data, dict) else str(data)

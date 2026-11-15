@@ -9,7 +9,8 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
-from . import registry, stt
+from . import registry
+from .speech import MAX_STT_SECONDS, SpeechError, SpeechKit
 from .agent import Brain
 from .config import Settings
 
@@ -29,7 +30,7 @@ def chunks(text: str, limit: int = LIMIT):
         text = text[cut:].lstrip("\n")
 
 
-def build(settings: Settings, brain: Brain) -> tuple[Bot, Dispatcher]:
+def build(settings: Settings, brain: Brain, speech: SpeechKit) -> tuple[Bot, Dispatcher]:
     bot = Bot(settings.telegram_token)
     dp = Dispatcher()
 
@@ -64,15 +65,15 @@ def build(settings: Settings, brain: Brain) -> tuple[Bot, Dispatcher]:
 
     @dp.message(F.voice)
     async def voice(m: Message):
-        if not settings.speechkit_key:
+        if not speech.enabled:
             return await m.answer("Голосовые не настроены: задайте YANDEX_SPEECHKIT_API_KEY.")
-        if m.voice.duration > stt.MAX_SECONDS:
-            return await m.answer(f"Пока понимаю голосовые до {stt.MAX_SECONDS} секунд.")
+        if m.voice.duration > MAX_STT_SECONDS:
+            return await m.answer(f"Пока понимаю голосовые до {MAX_STT_SECONDS} секунд.")
         buf = io.BytesIO()
         await bot.download(m.voice, destination=buf)
         try:
-            text = await stt.recognize(buf.getvalue(), settings.speechkit_key, settings.speechkit_lang)
-        except stt.SttError as e:
+            text = await speech.recognize(buf.getvalue(), fmt="oggopus")
+        except SpeechError as e:
             return await m.answer(str(e))
         if not text:
             return await m.answer("Не расслышал, повторите.")
