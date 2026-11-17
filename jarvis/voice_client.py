@@ -275,7 +275,7 @@ async def run(args) -> None:
     async with connect(args.url, additional_headers=headers, max_size=2**24) as ws:
         hello = json.loads(await ws.recv())
         if not hello.get("tts"):
-            print("⚠  На сервере не настроен SpeechKit — ответы будут только текстом.")
+            print("⚠  На сервере не настроена речь (JARVIS_STT_URL/JARVIS_TTS_URL или SpeechKit) — ответы будут только текстом.")
         player = Player(hello.get("sample_rate", 48000))
         conv = Conversation(wake, vad, player, ws.send, cfg)
 

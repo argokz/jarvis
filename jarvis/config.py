@@ -34,8 +34,15 @@ class Settings:
     telegram_allowed: frozenset[int] = field(default_factory=lambda: _ids(os.getenv("TELEGRAM_ALLOWED_IDS", "")))
     # Интеграции
     github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
+    # Речь: свои серверы (если заданы URL) или Yandex SpeechKit — см. speech.make_speech
+    stt_url: str = field(default_factory=lambda: os.getenv("JARVIS_STT_URL", ""))
+    stt_model: str = field(default_factory=lambda: os.getenv("JARVIS_STT_MODEL", ""))
+    tts_url: str = field(default_factory=lambda: os.getenv("JARVIS_TTS_URL", ""))
+    tts_voice: str = field(default_factory=lambda: os.getenv("JARVIS_TTS_VOICE", ""))
+    tts_rate: int = field(default_factory=lambda: int(os.getenv("JARVIS_TTS_RATE", "22050")))
+    speech_lang: str = field(default_factory=lambda: os.getenv(
+        "JARVIS_SPEECH_LANG", os.getenv("YANDEX_SPEECHKIT_LANG", "ru-RU")))
     speechkit_key: str = field(default_factory=lambda: os.getenv("YANDEX_SPEECHKIT_API_KEY", ""))
-    speechkit_lang: str = field(default_factory=lambda: os.getenv("YANDEX_SPEECHKIT_LANG", "ru-RU"))
     speechkit_voice: str = field(default_factory=lambda: os.getenv("YANDEX_SPEECHKIT_VOICE", "alena"))
     speechkit_tts_rate: int = field(default_factory=lambda: int(os.getenv("YANDEX_SPEECHKIT_TTS_RATE", "48000")))
     speechkit_folder: str = field(default_factory=lambda: os.getenv("YANDEX_FOLDER_ID", ""))

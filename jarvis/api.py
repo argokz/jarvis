@@ -22,7 +22,7 @@ from .confirm import Confirmations
 from .events import EventBus
 from .notify import Notifier
 from .router import VoiceRouter
-from .speech import SpeechKit
+from .speech import make_speech
 from .store import Store, _text
 from .voice import VoiceService, VoiceSession
 
@@ -36,8 +36,7 @@ bus = EventBus()
 notifier = Notifier(settings.ntfy_url, settings.ntfy_topic, settings.ntfy_token)
 confirms = Confirmations(bus, notifier, store)
 brain = Brain(settings, store, confirms)
-speech = SpeechKit(settings.speechkit_key, settings.speechkit_lang, settings.speechkit_voice,
-                   settings.speechkit_tts_rate, settings.speechkit_folder)
+speech = make_speech(settings)
 router = VoiceRouter(settings, brain, store, notifier)
 voice = VoiceService(router, speech)
 

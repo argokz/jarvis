@@ -65,6 +65,31 @@ uv run --extra voice python -m jarvis.voice_client
 - Файлы на ПК: задайте `JARVIS_OPEN_ROOTS`, и «открой таблицу бюджета» найдёт и откроет файл.
   Поиск и открытие — только внутри этих папок. Работает, если ядро запущено на том же ПК.
 
+### Речь без облака
+
+Вместо SpeechKit можно использовать свои серверы — ядро выбирает их, если задан `JARVIS_STT_URL`
+или `JARVIS_TTS_URL` (`jarvis/speech.py: make_speech`):
+
+- STT — любой OpenAI-совместимый `/v1/audio/transcriptions`: faster-whisper-server, speaches.
+  На CPU модель `Systran/faster-whisper-small` распознаёт фразу за ~2–3 с, medium — за ~7 с.
+- TTS — HTTP-сервер Piper. Русские голоса: `ru_RU-irina-medium`, `-denis-`, `-dmitri-`, `-ruslan-`.
+
+```bash
+uv tool install --python 3.13 "piper-tts[http]"
+python -m piper.download_voices --download-dir ~/piper-voices ru_RU-irina-medium
+python -m piper.http_server --host 127.0.0.1 --port 5005 -m ru_RU-irina-medium --data-dir ~/piper-voices
+```
+
+```
+JARVIS_STT_URL=http://127.0.0.1:8000/v1/audio/transcriptions
+JARVIS_STT_MODEL=Systran/faster-whisper-small
+JARVIS_TTS_URL=http://127.0.0.1:5005
+JARVIS_TTS_RATE=22050          # должна совпадать с частотой голоса Piper
+```
+
+Голос включается, только когда заданы оба URL. `onnxruntime` (Piper, openWakeWord) пока
+собран до Python 3.14 — на 3.15 ядро работает, а Piper и голосовой клиент ставьте в окружение 3.13.
+
 Wake word пока английский — встроенная модель openWakeWord `hey_jarvis`. Своё слово
 (например, «Джарвис») — это отдельно обученная .onnx-модель, её путь передаётся в `--wake-model`.
 
