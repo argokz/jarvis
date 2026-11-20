@@ -10,8 +10,9 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
-      { "title": "Jarvis", "width": 440, "height": 780, "minWidth": 360, "minHeight": 520 }
+      { "label": "main", "title": "Jarvis", "width": 460, "height": 800, "minWidth": 360, "minHeight": 520, "visible": false }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:"

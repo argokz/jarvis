@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
+
+COST = re.compile(r'"cost_usd": ([0-9.eE+-]+)')
 
 
 class Store:
@@ -22,16 +25,23 @@ class Store:
                 channel TEXT, kind TEXT NOT NULL, name TEXT, payload TEXT);
             """
         )
+        if "cost" not in {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}:
+            self.db.execute("ALTER TABLE sessions ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+
+    def session(self, user_id: str) -> tuple[str, float, float] | None:
+        """Сессия агента: её id, время последнего хода и сколько она уже стоила (нарастающим итогом)."""
+        return self.db.execute("SELECT session_id, updated_at, cost FROM sessions WHERE user_id=?",
+                               (user_id,)).fetchone()
 
     def get_session(self, user_id: str) -> str | None:
         row = self.db.execute("SELECT session_id FROM sessions WHERE user_id=?", (user_id,)).fetchone()
         return row[0] if row else None
 
-    def set_session(self, user_id: str, session_id: str) -> None:
+    def set_session(self, user_id: str, session_id: str, cost: float = 0.0) -> None:
         self.db.execute(
-            "INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
-            "session_id=excluded.session_id, updated_at=excluded.updated_at",
-            (user_id, session_id, time.time()),
+            "INSERT INTO sessions(user_id, session_id, updated_at, cost) VALUES(?,?,?,?) ON CONFLICT(user_id) "
+            "DO UPDATE SET session_id=excluded.session_id, updated_at=excluded.updated_at, cost=excluded.cost",
+            (user_id, session_id, time.time(), cost),
         )
 
     def drop_session(self, user_id: str) -> None:
@@ -66,8 +76,29 @@ class Store:
                 out.append({"id": id_, "ts": ts, "channel": channel, "role": kind, "text": text})
         return out
 
+    def dialogue(self, user_id: str, limit: int = 36) -> list[dict]:
+        """Реплики, вызовы инструментов и их результаты по порядку. Из внутренних каналов «*-agent» — только вызовы:
+        это действия агента по поручению роутера, а его реплики там — служебные."""
+        cur = self.db.execute(
+            "SELECT id, channel, kind, name, payload FROM journal WHERE user_id=? "
+            "AND kind IN ('user','assistant','tool','tool_result') "
+            "AND (kind LIKE 'tool%' OR channel IS NULL OR channel NOT LIKE '%-agent') "
+            "ORDER BY id DESC LIMIT ?", (user_id, limit),
+        )
+        return [dict(zip(("id", "channel", "kind", "name", "payload"), r)) for r in reversed(cur.fetchall())]
+
     def history(self, user_id: str, limit: int = 24) -> list[tuple[str, str]]:
         return [(m["role"], m["text"]) for m in self.messages(user_id, limit)]
+
+    def spent(self, since: float) -> tuple[float, int]:
+        """Сколько стоили ходы агента с момента since и сколько их было. Быстрая модель сюда не входит."""
+        total, turns = 0.0, 0
+        for (payload,) in self.db.execute(
+                "SELECT payload FROM journal WHERE kind='assistant' AND ts>=? AND payload LIKE '%cost_usd%'", (since,)):
+            found = COST.search(payload)  # запись обрезается до 4000 знаков и может не быть целым JSON
+            if found and float(found[1]) > 0:
+                total, turns = total + float(found[1]), turns + 1
+        return round(total, 4), turns
 
     def recent(self, limit: int = 50) -> list[dict]:
         cur = self.db.execute(

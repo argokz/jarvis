@@ -1,23 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted } from "vue";
 import ChatView from "./components/ChatView.vue";
+import FeaturesView from "./components/FeaturesView.vue";
 import ProjectsView from "./components/ProjectsView.vue";
+import ScenariosView from "./components/ScenariosView.vue";
 import SettingsView from "./components/SettingsView.vue";
 import TasksView from "./components/TasksView.vue";
-import { connect, state } from "./lib/state";
+import { adoptLocal, connect, scheduleAction, state, type Tab } from "./lib/state";
 
-type Tab = "chat" | "tasks" | "projects" | "settings";
-const tab = ref<Tab>(state.conn.token ? "chat" : "settings");
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: "chat", label: "Чат", icon: "💬" },
+  { id: "features", label: "Функции", icon: "🧩" },
   { id: "tasks", label: "Задачи", icon: "⚡" },
+  { id: "scenarios", label: "Сценарии", icon: "🎬" },
   { id: "projects", label: "Проекты", icon: "📁" },
   { id: "settings", label: "Настройки", icon: "⚙️" },
 ];
 const statusText = computed(
   () => ({ online: "на связи", connecting: "подключаюсь…", offline: "нет связи" })[state.status],
 );
-onMounted(connect);
+const ringing = computed(() => state.schedule.filter((s) => s.state === "ringing"));
+onMounted(async () => {
+  await adoptLocal(); // на ПК с ядром оболочка сама отдаёт адрес и токен
+  if (!state.conn.token) state.tab = "settings";
+  connect();
+});
 </script>
 
 <template>
@@ -29,20 +36,27 @@ onMounted(connect);
       </span>
     </header>
 
-    <div v-if="state.confirmations.length && tab !== 'tasks'" class="alert" @click="tab = 'tasks'">
+    <div v-if="state.confirmations.length && state.tab !== 'tasks'" class="alert" @click="state.tab = 'tasks'">
       ⚠️ Нужно подтверждение ({{ state.confirmations.length }}) — открыть
+    </div>
+    <div v-for="r in ringing" :key="r.id" class="ring" role="alert">
+      <span>🔔 {{ r.title }}</span>
+      <button class="primary small" @click="scheduleAction(r.id, 'stop')">Стоп</button>
+      <button class="small" @click="scheduleAction(r.id, 'snooze')">Через 10 минут</button>
     </div>
     <div v-if="state.error" class="error" role="alert" @click="state.error = ''">{{ state.error }}</div>
 
     <main>
-      <ChatView v-if="tab === 'chat'" />
-      <TasksView v-else-if="tab === 'tasks'" />
-      <ProjectsView v-else-if="tab === 'projects'" />
-      <SettingsView v-else @saved="tab = 'chat'" />
+      <ChatView v-if="state.tab === 'chat'" />
+      <FeaturesView v-else-if="state.tab === 'features'" />
+      <TasksView v-else-if="state.tab === 'tasks'" />
+      <ScenariosView v-else-if="state.tab === 'scenarios'" />
+      <ProjectsView v-else-if="state.tab === 'projects'" />
+      <SettingsView v-else @saved="state.tab = 'chat'" />
     </main>
 
     <nav class="tabs">
-      <button v-for="t in tabs" :key="t.id" :class="{ active: tab === t.id }" @click="tab = t.id">
+      <button v-for="t in tabs" :key="t.id" :class="{ active: state.tab === t.id }" @click="state.tab = t.id">
         <span class="icon">{{ t.icon }}</span>
         <span>{{ t.label }}</span>
         <b v-if="t.id === 'tasks' && state.confirmations.length" class="dot">{{ state.confirmations.length }}</b>
@@ -73,11 +87,22 @@ onMounted(connect);
 .status.connecting i { background: var(--warn); }
 .alert, .error { margin: 8px 16px 0; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-size: 14px; }
 .alert { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.ring {
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ring span { flex: 1; min-width: 150px; font-weight: 600; }
 .error { background: color-mix(in srgb, var(--danger) 16%, transparent); }
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface);
@@ -91,7 +116,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   position: relative;
 }

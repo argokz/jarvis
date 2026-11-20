@@ -56,6 +56,19 @@ class Notifier:
         await self._push(f"{title}\nОткройте приложение или Telegram, чтобы ответить.",
                          "Нужно подтверждение", 5, ["warning"])
 
+    async def alert(self, item_id: int, text: str, priority: int = 4, stop: bool = False) -> None:
+        """Сработал таймер, напоминание или будильник. В Telegram — кнопки «стоп» и «отложить»."""
+        markup = None
+        if self.telegram:
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+            row = [InlineKeyboardButton(text="⏰ Через 10 минут", callback_data=f"al:{item_id}:z")]
+            if stop:
+                row.insert(0, InlineKeyboardButton(text="⏹ Стоп", callback_data=f"al:{item_id}:s"))
+            markup = InlineKeyboardMarkup(inline_keyboard=[row])
+        await self._telegram("🔔 " + text, markup)
+        await self._push(text, "Jarvis", priority, ["alarm_clock"])
+
     async def _telegram(self, text: str, markup=None) -> None:
         if not self.telegram:
             return

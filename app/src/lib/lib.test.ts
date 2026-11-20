@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultServer, wsUrl } from "./config";
-import { shortPath } from "./format";
+import { Desktop } from "./desktop";
+import { seconds, shortPath, usd } from "./format";
 import { mergeMessages } from "./messages";
 import { concat, downsampleToInt16, int16ToFloat32 } from "./pcm";
 import { VoiceClient } from "./voice";
@@ -109,5 +110,39 @@ describe("format", () => {
     expect(shortPath("/tmp/x/vault/10_Projects/demo.md")).toBe("10_Projects/demo.md");
     expect(shortPath("D:\\Docs\\finance\\Бюджет.xlsx")).toBe("…/finance/Бюджет.xlsx");
     expect(shortPath("a/b")).toBe("a/b");
+  });
+});
+
+describe("desktop shell bridge", () => {
+  it("is absent in a browser: calls return empty values instead of failing", async () => {
+    const d = new Desktop({});
+    expect(d.present).toBe(false);
+    expect(await d.localConn()).toBeNull();
+    expect(await d.services()).toEqual([]);
+    expect(await d.autostart()).toBeNull();
+    expect(await d.serviceAction("jarvis-core", "restart")).toEqual([]);
+  });
+  it("passes commands to the shell and survives commands a platform lacks", async () => {
+    const calls: unknown[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push([cmd, args]);
+      if (cmd === "local_conn") return { server: "http://127.0.0.1:8010", token: "t" };
+      if (cmd === "service_action") throw "Unit jarvis-x.service not found";
+      throw new Error("unknown command");
+    };
+    const d = new Desktop({ __TAURI__: { core: { invoke } } });
+    expect(d.present).toBe(true);
+    expect(await d.localConn()).toEqual({ server: "http://127.0.0.1:8010", token: "t" });
+    expect(await d.autostart()).toBeNull(); // на телефоне автозапуска нет — блок просто не показываем
+    await d.setAutostart(true);
+    expect(calls[calls.length - 1]).toEqual(["plugin:autostart|enable", undefined]);
+    await expect(d.serviceAction("jarvis-x", "start")).rejects.toThrow("not found");
+  });
+});
+
+describe("format", () => {
+  it("names small sums in words and prints seconds the Russian way", () => {
+    expect([usd(0), usd(0.004), usd(0.0721)]).toEqual(["$0", "меньше цента", "$0.07"]);
+    expect([seconds(0.13), seconds(null)]).toEqual(["0,13 с", "—"]);
   });
 });
