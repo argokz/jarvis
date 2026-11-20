@@ -148,8 +148,8 @@ async def test_router_turns_light_on_without_agent_in_one_model_call(tmp_path):
     assert len(client.calls) == 1 and brain.calls == []
     kw = client.calls[0]
     assert [t["name"] for t in kw["tools"]] == ["delegate", "intent__HassTurnOn", "homeassistant__GetLiveContext"]
-    assert "Умным домом управляй сам" in kw["system"] and "Лампочка" in kw["system"]
-    assert "управлению умным домом" not in kw["system"]  # дом больше не уходит агенту
+    assert "Умным домом управляй сам" in kw["system"][0]["text"] and "Лампочка" in kw["system"][0]["text"]
+    assert "управлению умным домом" not in kw["system"][0]["text"]  # дом больше не уходит агенту
     assert ha_calls[-1][:2] == ("tools/call", {"name": "intent__HassTurnOn", "arguments": {"name": "Лампочка", "area": "Зал"}})
     tool = [e for e in store.recent() if e["kind"] == "tool"]
     assert tool[0]["name"] == "intent__HassTurnOn" and "Лампочка" in tool[0]["payload"]
@@ -206,4 +206,4 @@ async def test_router_falls_back_to_agent_when_ha_is_down(tmp_path):
     r, _, brain = router(tmp_path, client, ha([], fail=True))
     assert await say(r, "включи лампочку") == "Секунду. Ответ агента."
     kw = client.calls[0]
-    assert [t["name"] for t in kw["tools"]] == ["delegate"] and "управлению умным домом" in kw["system"]
+    assert [t["name"] for t in kw["tools"]] == ["delegate"] and "управлению умным домом" in kw["system"][0]["text"]

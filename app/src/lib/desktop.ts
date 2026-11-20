@@ -41,6 +41,15 @@ export class Desktop {
   localConn = () => this.call<Conn | null>("local_conn", undefined, null);
   services = () => this.call<Service[]>("services", undefined, []);
   showWindow = () => this.call<null>("show_window", undefined, null);
+
+  /** Открыть ссылку в браузере системы: из окна Tauri обычная ссылка никуда не ведёт. */
+  async open(url: string): Promise<void> {
+    if (!this.present) {
+      window.open(url, "_blank", "noopener");
+      return;
+    }
+    await this.call<null>("open_external", { url }, null);
+  }
   autostart = () => this.call<boolean | null>("plugin:autostart|is_enabled", undefined, null);
   setAutostart = (on: boolean) => this.call<null>(`plugin:autostart|${on ? "enable" : "disable"}`, undefined, null);
 

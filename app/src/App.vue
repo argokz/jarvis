@@ -2,6 +2,7 @@
 import { computed, onMounted } from "vue";
 import ChatView from "./components/ChatView.vue";
 import FeaturesView from "./components/FeaturesView.vue";
+import HomeView from "./components/HomeView.vue";
 import ProjectsView from "./components/ProjectsView.vue";
 import ScenariosView from "./components/ScenariosView.vue";
 import SettingsView from "./components/SettingsView.vue";
@@ -10,6 +11,7 @@ import { adoptLocal, connect, scheduleAction, state, type Tab } from "./lib/stat
 
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: "chat", label: "Чат", icon: "💬" },
+  { id: "home", label: "Дом", icon: "🏠" },
   { id: "features", label: "Функции", icon: "🧩" },
   { id: "tasks", label: "Задачи", icon: "⚡" },
   { id: "scenarios", label: "Сценарии", icon: "🎬" },
@@ -48,6 +50,7 @@ onMounted(async () => {
 
     <main>
       <ChatView v-if="state.tab === 'chat'" />
+      <HomeView v-else-if="state.tab === 'home'" />
       <FeaturesView v-else-if="state.tab === 'features'" />
       <TasksView v-else-if="state.tab === 'tasks'" />
       <ScenariosView v-else-if="state.tab === 'scenarios'" />
@@ -102,7 +105,7 @@ onMounted(async () => {
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tabs {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface);

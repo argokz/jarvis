@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime
 
 import anthropic
 
-from . import browser, music, pc, printing, registry, scenarios, schedule
+from . import browser, music, pc, pricing, printing, registry, scenarios, schedule
 from .agent import Brain
 from .config import Settings
 from .home import READ_ONLY, Home
@@ -101,6 +102,12 @@ READY = schedule.SPOKEN | {"scenario_run", "music_play"}  # результат �
 MAX_ROUNDS = 3  # запросов к модели на одну реплику: своё действие → при необходимости ответ по результату
 VOICE_SUFFIX = "\n\n(Голосовой запрос: ответь одной–тремя короткими фразами без разметки — ответ будет озвучен.)"
 HISTORY_TURNS = 12
+HISTORY_ROWS = HISTORY_TURNS * 4  # записей журнала в истории: реплики, вызовы инструментов и их результаты
+
+
+def stamp(ts: float, text: str) -> str:
+    """Реплика пользователя с её временем. Вид один и тот же в своём ходе и потом в истории — иначе кэш промахнётся."""
+    return f"[{datetime.fromtimestamp(ts):%Y-%m-%d %H:%M, %a}] {text}"
 
 
 class VoiceRouter:
@@ -116,6 +123,7 @@ class VoiceRouter:
         self.tunes = tunes if tunes is not None and tunes.available else None  # None — музыки нет
         self._client = client
         self._background: set[asyncio.Task] = set()
+        self._anchor: dict[str, int] = {}  # с какой записи журнала начинается история (см. _window)
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -160,7 +168,7 @@ class VoiceRouter:
         """
         msgs: list[dict] = []
         calls: list[dict] = []  # вызовы после последней реплики пользователя: {"use": блок, "result": блок}
-        for row in self.store.dialogue(user_id, HISTORY_TURNS * 4):
+        for row in self._window(user_id):
             if row["kind"].startswith("tool"):
                 try:
                     data = json.loads(row["payload"] or "{}")
@@ -186,6 +194,7 @@ class VoiceRouter:
                 continue
             if role == "user":
                 calls = []
+                text = stamp(row["ts"], text)  # тем же видом, каким реплика ушла модели в своём ходе
             elif calls and msgs and msgs[-1]["role"] == "user":
                 msgs += [{"role": "assistant", "content": [c["use"] for c in calls]},
                          {"role": "user", "content": [c["result"] for c in calls]}]
@@ -200,6 +209,18 @@ class VoiceRouter:
             msgs.pop()
         return msgs
 
+    def _window(self, user_id: str) -> list[dict]:
+        """Записи журнала для истории. Окно растёт от HISTORY_ROWS до двух таких и только потом сдвигается.
+
+        Кэш запросов сравнивает начало запроса байт в байт. Окно «последние N записей» съезжало на каждой
+        реплике, начало истории менялось, и вся история оплачивалась заново с наценкой за запись в кэш.
+        """
+        rows = self.store.dialogue(user_id, HISTORY_ROWS * 2)
+        ids = [r["id"] for r in rows]
+        if self._anchor.get(user_id) not in ids:
+            self._anchor[user_id] = ids[-HISTORY_ROWS] if len(ids) > HISTORY_ROWS else (ids[0] if ids else 0)
+        return rows[ids.index(self._anchor[user_id]):] if ids else []
+
     async def respond(self, user_id: str, text: str, channel: str = "voice") -> AsyncIterator[str]:
         """Отдаёт фрагменты ответа по мере генерации — их сразу можно озвучивать."""
         home = await self.home.context() if self.home else None
@@ -212,12 +233,15 @@ class VoiceRouter:
         own = {t["name"] for t in own_tools}  # что роутер выполняет сам
         # delegate — тоже в истории: иначе модель видит свой прошлый ответ «нашёл, записал» без вызова
         # рядом и в следующей реплике объявляет, что ничего не делала
-        messages = self.history(user_id, own | {"delegate"}) + [
-            {"role": "user", "content": f"[{datetime.now():%Y-%m-%d %H:%M, %a}] {text}"}]
-        self.store.log(user_id, channel, "user", payload=text)
+        now = time.time()  # одно время и модели, и журналу: в истории реплика должна выглядеть так же
+        messages = self.history(user_id, own | {"delegate"}) + [{"role": "user", "content": stamp(now, text)}]
+        self.store.log(user_id, channel, "user", payload=text, ts=now)
         spoken: list[str] = []
+        used: dict[str, int] = {}  # токены всех запросов этого хода
         try:
-            system = self.system(overview, scenes)
+            # Инструменты и подсказка меняются редко — отдельная точка кэша: её читает любой следующий ход,
+            # даже когда история уже другая. Вторая точка (cache_control запроса) идёт по концу истории.
+            system = [{"type": "text", "text": self.system(overview, scenes), "cache_control": {"type": "ephemeral"}}]
             task: str | None = None
             for round_ in range(MAX_ROUNDS):
                 last = round_ == MAX_ROUNDS - 1
@@ -240,6 +264,7 @@ class VoiceRouter:
                                 spoken.append(event.text)
                                 yield event.text
                         final = await stream.get_final_message()
+                    pricing.add(used, getattr(final, "usage", None))
                 except ValueError:
                     # ввод инструмента не разобрался как JSON — отдаём агенту исходную реплику
                     task = text
@@ -293,7 +318,9 @@ class VoiceRouter:
                     spoken.append(chunk)
                     yield chunk
         finally:
-            self.store.log(user_id, channel, "assistant", payload={"text": "".join(spoken).strip()})
+            # цена и токены — перед текстом: запись журнала обрезается с конца
+            spent = {"cost_usd": pricing.cost(self.s.router_model, used), "tokens": used} if any(used.values()) else {}
+            self.store.log(user_id, channel, "assistant", payload={**spent, "text": "".join(spoken).strip()})
 
     @staticmethod
     def _reads(block, home_names: set[str]) -> bool:

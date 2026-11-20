@@ -543,7 +543,7 @@ async def test_router_runs_a_scenario_by_meaning_in_one_model_call(w):
     assert len(client.calls) == 1 and len(w.home.calls) == 2
     kw = client.calls[0]
     assert [t["name"] for t in kw["tools"]] == ["delegate", "scenario_run"]
-    assert "- Я дома: «я дома», «Я пришёл»" in kw["system"] and "не вызвав его" in kw["system"]
+    assert "- Я дома: «я дома», «Я пришёл»" in kw["system"][0]["text"] and "не вызвав его" in kw["system"][0]["text"]
     # вызов и то, что сценарий сказал, остаются в истории следующих реплик
     past = [b for m in r.history("owner", {"scenario_run"}) if not isinstance(m["content"], str) for b in m["content"]]
     assert past[0]["input"] == {"name": "Я дома"} and past[1]["content"] == "С возвращением."
@@ -557,7 +557,7 @@ async def test_router_explains_a_missing_scenario_and_hides_the_tool_when_there_
     (w.vault / scenarios.DIR / "Я дома.md").unlink()
     client = Client((["Привет."], "end_turn", []))
     await say(router(w, client), "привет")
-    assert [t["name"] for t in client.calls[0]["tools"]] == ["delegate"] and "Сценарии" not in client.calls[0]["system"]
+    assert [t["name"] for t in client.calls[0]["tools"]] == ["delegate"] and "Сценарии" not in client.calls[0]["system"][0]["text"]
 
 
 # --- голос ---------------------------------------------------------------------------------------

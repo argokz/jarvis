@@ -1,7 +1,7 @@
 import { reactive } from "vue";
 import {
   Api, ApiError, type Confirmation, type JournalEvent, type Message, type Project, type Scenario, type Scheduled,
-  type SpeechCheck, type StatusReport, type Try,
+  type FlowStep, type HomeAction, type HomeItem, type HomeOverview, type SpeechCheck, type StatusReport, type Try,
 } from "./api";
 import { Player, Recorder } from "./audio";
 import { type Conn, loadConn, saveConn, wsUrl } from "./config";
@@ -11,7 +11,7 @@ import { mergeMessages } from "./messages";
 import { VoiceClient } from "./voice";
 
 export type VoicePhase = "idle" | "recording" | "thinking" | "speaking";
-export type Tab = "chat" | "features" | "tasks" | "scenarios" | "projects" | "settings";
+export type Tab = "chat" | "features" | "home" | "tasks" | "scenarios" | "projects" | "settings";
 
 const FAST_KEY = "jarvis.fast";
 function loadFast(): boolean {
@@ -30,6 +30,11 @@ export const state = reactive({
   speechCheck: null as SpeechCheck | null,
   checkingSpeech: false,
   services: [] as Service[],
+  home: null as HomeOverview | null,
+  homeError: "",
+  homeBusy: "", // сущность или служба, с которой сейчас работаем
+  flow: null as FlowStep | null, // открытый шаг мастера добавления устройства
+  flowTitle: "",
   serviceBusy: "",
   autostart: null as boolean | null, // null — оболочки нет или она не умеет автозапуск
   status: "offline" as Status,
@@ -194,6 +199,71 @@ export async function checkSpeech(): Promise<void> {
   }
 }
 
+async function homeCall<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    state.homeError = "";
+    return await fn();
+  } catch (e) {
+    state.homeError = e instanceof Error ? e.message : String(e);
+    return undefined;
+  }
+}
+
+export async function refreshHome(): Promise<void> {
+  const home = await homeCall(() => api.home());
+  if (home) state.home = home;
+}
+
+/** Команда устройству. Облачные устройства отвечают не сразу — состояние перечитываем дважды. */
+export async function homeAct(item: HomeItem, action: HomeAction, value?: number): Promise<void> {
+  state.homeBusy = item.entity_id;
+  try {
+    const done = await homeCall(() => api.homeAct(item.entity_id, action, value));
+    if (!done) return;
+    if (action === "on" || action === "off" || action === "toggle") {
+      if (item.on !== null) item.on = action === "toggle" ? !item.on : action === "on"; // сразу, не дожидаясь облака
+    }
+    setTimeout(() => void refreshHome(), 800);
+    setTimeout(() => void refreshHome(), 3000);
+  } finally {
+    state.homeBusy = "";
+  }
+}
+
+/** Открыть или закрыть устройство голосовому ассистенту. */
+export async function homeExpose(item: HomeItem, exposed: boolean): Promise<void> {
+  if (await homeCall(() => api.homeExpose(item.entity_id, exposed))) item.exposed = exposed;
+  else await refreshHome();
+}
+
+/** Опросить службу производителя заново: так появляются устройства, добавленные в её приложении. */
+export async function homeReload(entry: string): Promise<void> {
+  state.homeBusy = entry;
+  try {
+    await homeCall(() => api.homeReload(entry));
+    await new Promise((r) => setTimeout(r, 2500)); // служба поднимается и опрашивает облако
+    await refreshHome();
+  } finally {
+    state.homeBusy = "";
+  }
+}
+
+export async function flowOpen(id: string, title: string): Promise<void> {
+  state.flowTitle = title;
+  state.flow = (await homeCall(() => api.homeFlow(id))) ?? null;
+}
+
+export async function flowAnswer(data: Record<string, unknown>): Promise<void> {
+  if (!state.flow) return;
+  const next = await homeCall(() => api.homeFlowAnswer(state.flow!.flow_id, data));
+  if (next) state.flow = next;
+}
+
+export function flowClose(): void {
+  state.flow = null;
+  void refreshHome();
+}
+
 export async function refreshDesktop(): Promise<void> {
   [state.services, state.autostart] = await Promise.all([desktop.services(), desktop.autostart()]);
 }
@@ -229,6 +299,7 @@ export function connect(): void {
   if (!state.conn.token) return;
   events.restart();
   void refreshAll();
+  void refreshStatus(); // имя ассистента нужно подсказкам на всех вкладках
 }
 
 export function updateConn(c: Conn): void {

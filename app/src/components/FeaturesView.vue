@@ -45,7 +45,7 @@ function toggle(s: Service) {
       <div class="card">
         <b>{{ state.report.name }}: работает {{ counts.ready }} из {{ counts.all }}</b>
         <div class="small muted">
-          Агент сегодня: {{ usd(state.report.agent_today.usd) }}, ходов: {{ state.report.agent_today.turns }}.
+          Расход моделей сегодня: {{ usd(state.report.spent_today.usd) }}, ходов: {{ state.report.spent_today.turns }}.
           Микрофонов на связи: {{ state.report.mics }}.
         </div>
         <div class="small muted legend">

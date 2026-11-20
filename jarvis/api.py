@@ -22,6 +22,7 @@ from .config import Settings
 from .confirm import Confirmations
 from .events import EventBus
 from .home import Home
+from .homepanel import Panel, PanelError
 from .notify import Notifier
 from .router import VoiceRouter
 from .scenarios import ScenarioError, Scenarios
@@ -79,6 +80,8 @@ scenarios.announce = voice.announce
 scheduler.sinks.append(voice.on_alert)
 scheduler.has_voice = lambda: bool(voice.sessions)
 scheduler.hooks.append(scenarios.tick)
+panel = Panel(settings.hass_url, settings.hass_token)
+panel.changed = lambda: setattr(home, "_cache", None)  # открыли устройство ассистенту — голос видит его сразу
 status = Status(settings, store, speech, home, tunes, scenarios, scheduler, voice, notifier, web=brain.web)
 
 
@@ -157,6 +160,19 @@ class SnoozeIn(BaseModel):
 
 class EnabledIn(BaseModel):
     enabled: bool
+
+
+class HomeActIn(BaseModel):
+    action: str
+    value: float | None = None
+
+
+class ExposeIn(BaseModel):
+    exposed: bool
+
+
+class FlowIn(BaseModel):
+    data: dict = {}
 
 
 @app.get("/")
@@ -279,6 +295,47 @@ async def scenario_enabled(name: str, body: EnabledIn, user: str = Depends(auth)
         return scenarios.public(scenarios.set_enabled(name, body.enabled))
     except (ScenarioError, OSError) as e:
         raise HTTPException(409, str(e)) from e
+
+
+async def _panel(call):
+    try:
+        return await call
+    except PanelError as e:
+        raise HTTPException(502 if "недоступен" in str(e) or "ответил" in str(e) else 400, str(e)) from e
+
+
+@app.get("/home")
+async def home_overview(user: str = Depends(auth)):
+    """Вкладка «Дом»: устройства по комнатам, службы производителей, найденное в сети."""
+    return await _panel(panel.overview())
+
+
+@app.post("/home/entity/{entity_id}")
+async def home_act(entity_id: str, body: HomeActIn, user: str = Depends(auth)):
+    store.log(user, "app", "tool", "home_panel", {"entity_id": entity_id, "action": body.action, "value": body.value})
+    return await _panel(panel.act(entity_id, body.action, body.value))
+
+
+@app.post("/home/entity/{entity_id}/expose")
+async def home_expose(entity_id: str, body: ExposeIn, user: str = Depends(auth)):
+    store.log(user, "app", "tool", "home_expose", {"entity_id": entity_id, "exposed": body.exposed})
+    return await _panel(panel.expose(entity_id, body.exposed))
+
+
+@app.post("/home/integrations/{entry_id}/reload")
+async def home_reload(entry_id: str, user: str = Depends(auth)):
+    return await _panel(panel.reload(entry_id))
+
+
+@app.get("/home/flows/{flow_id}")
+async def home_flow(flow_id: str, user: str = Depends(auth)):
+    return await _panel(panel.flow(flow_id))
+
+
+@app.post("/home/flows/{flow_id}")
+async def home_flow_answer(flow_id: str, body: FlowIn, user: str = Depends(auth)):
+    store.log(user, "app", "tool", "home_add_device", {"flow_id": flow_id, "fields": sorted(body.data)})
+    return await _panel(panel.flow(flow_id, body.data))
 
 
 @app.websocket("/events/ws")

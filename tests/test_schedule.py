@@ -372,8 +372,8 @@ async def test_router_sets_timer_in_one_model_call_and_speaks_the_result(tmp_pat
     kw = client.calls[0]
     assert len(client.calls) == 1 and w.s.active()[0]["channel"] == "voice"
     assert [t["name"] for t in kw["tools"]] == ["delegate", "schedule_set", "schedule_list", "schedule_cancel", "schedule_dismiss"]
-    assert "Таймеры, напоминания и будильники ставь сам" in kw["system"]
-    assert "не говори, что сделал, не вызвав его" in kw["system"] and "не повторяй" in kw["system"]
+    assert "Таймеры, напоминания и будильники ставь сам" in kw["system"][0]["text"]
+    assert "не говори, что сделал, не вызвав его" in kw["system"][0]["text"] and "не повторяй" in kw["system"][0]["text"]
     assert [e["name"] for e in w.store.recent() if e["kind"] == "tool"] == ["schedule_set"]
     # модель всё же что-то сказала — результат добавляется, а не теряется
     client = Client((["Хорошо."], "tool_use", [use("schedule_set", {"kind": "alarm", "at": "07:00"})]))
@@ -416,7 +416,7 @@ async def test_router_history_shows_its_own_past_tool_calls(tmp_path, w):
     assert call["type"] == "tool_use" and call["name"] == "schedule_set" and call["input"] == {"kind": "timer", "in_seconds": 600}
     assert msgs[2]["content"] == [{"type": "tool_result", "tool_use_id": call["id"], "content": "Поставил таймер на 10 минут."}]
     assert msgs[3]["content"] == "Поставил таймер на 10 минут."
-    assert msgs[4]["content"] == "а это из телеграма" and msgs[5]["content"] == "Записал."  # чужие инструменты не показываем
+    assert msgs[4]["content"].endswith("] а это из телеграма") and msgs[5]["content"] == "Записал."  # чужие инструменты не показываем
     # роутер без планировщика этих вызовов в историю не берёт: такого инструмента у модели сейчас нет
     r.scheduler = None
     assert all(isinstance(m["content"], str) for m in r.history("owner"))

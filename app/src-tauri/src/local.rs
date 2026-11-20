@@ -30,6 +30,12 @@ pub fn server(text: &str) -> String {
         .unwrap_or_else(|| "http://127.0.0.1:8000".to_string())
 }
 
+/// Ссылка, которую можно отдать системе на открытие: только веб-адрес, без пробелов и управляющих знаков.
+pub fn is_web_url(url: &str) -> bool {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    rest.is_some_and(|r| !r.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control()))
+}
+
 /// Службы ассистента: имя, название, пояснение и можно ли выключить совсем.
 pub const UNITS: &[(&str, &str, &str, bool)] = &[
     ("jarvis-core", "Ядро", "Мозг ассистента: без него не работает ничего", false),
@@ -104,6 +110,15 @@ mod tests {
         assert_eq!(server("JARVIS_VOICE_URL=wss://pc.ts.net/voice/ws"), "https://pc.ts.net");
         assert_eq!(server("JARVIS_APP_SERVER=http://10.0.0.2:9000/\nJARVIS_VOICE_URL=ws://x/voice/ws"), "http://10.0.0.2:9000");
         assert_eq!(server(""), "http://127.0.0.1:8000");
+    }
+
+    #[test]
+    fn opens_only_web_addresses() {
+        assert!(is_web_url("http://homeassistant.local:8123/config/integrations/dashboard"));
+        assert!(is_web_url("https://ha.example/x?y=1"));
+        for bad in ["file:///etc/passwd", "javascript:alert(1)", "https://", "--help", "http://a b", "http://a\nb", ""] {
+            assert!(!is_web_url(bad), "{bad}");
+        }
     }
 
     #[test]

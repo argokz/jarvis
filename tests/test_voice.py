@@ -208,7 +208,7 @@ async def test_router_history_shared_across_channels(env):
     await collect(r.respond("owner", "что я писал?"))
     msgs = client.calls[0]["messages"]
     assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    assert msgs[0]["content"] == "привет из телеграма"
+    assert msgs[0]["content"].endswith("] привет из телеграма")  # со временем, когда это было сказано
     assert all("внутренняя" not in m["content"] for m in msgs)
 
 

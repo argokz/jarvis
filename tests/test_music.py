@@ -610,7 +610,7 @@ async def test_router_turns_music_on_in_one_model_call(tmp_path):
     await settle()
     assert len(client.calls) == 1 and d.runs == [("http://youtube/t1", 0.0)]
     kw = client.calls[0]
-    assert [t["name"] for t in kw["tools"]] == ["delegate", "music_play"] and "music_play" in kw["system"]
+    assert [t["name"] for t in kw["tools"]] == ["delegate", "music_play"] and "music_play" in kw["system"][0]["text"]
     assert brain.notes == ["музыка: Кино (voice)"]
     past = [b for msg in r.history("owner", {"music_play"}) if not isinstance(msg["content"], str) for b in msg["content"]]
     assert past[0]["input"] == {"query": "Кино"} and past[1]["content"] == "Включаю: Кино — Песня 1."
@@ -625,7 +625,7 @@ async def test_router_explains_when_nothing_is_found_and_has_no_tool_without_mus
     client = Client((["Привет."], "end_turn", []))
     r, _ = router(tmp_path, client, make(())[0])
     await say(r, "привет")
-    assert [t["name"] for t in client.calls[0]["tools"]] == ["delegate"] and "music_play" not in client.calls[0]["system"]
+    assert [t["name"] for t in client.calls[0]["tools"]] == ["delegate"] and "music_play" not in client.calls[0]["system"][0]["text"]
 
 
 async def test_agent_gets_the_same_music_tool():

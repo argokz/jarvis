@@ -94,9 +94,9 @@ def test_agent_spending_today_counts_turns_and_survives_cut_records(tmp_path):
     st = make(tmp_path)
     st.store.log("owner", "app", "assistant", payload={"cost_usd": 0.03, "text": "раз"})
     st.store.log("owner", "app", "assistant", payload={"cost_usd": 0.0421, "text": "я" * 5000})  # запись обрезана
-    st.store.log("owner", "voice", "assistant", payload={"text": "быстрая модель цену не пишет"})
+    st.store.log("owner", "voice", "assistant", payload={"text": "запись без цены"})
     st.store.log("owner", "app", "assistant", payload={"cost_usd": None, "text": "сценарий"})
-    assert asyncio.run(st.collect())["agent_today"] == {"usd": 0.0721, "turns": 2}
+    assert asyncio.run(st.collect())["spent_today"] == {"usd": 0.0721, "turns": 2}
     assert st.store.spent(st._clock() + 60) == (0.0, 0)
 
 

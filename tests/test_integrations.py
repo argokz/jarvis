@@ -14,7 +14,7 @@ from jarvis.store import Store
 PID = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"
 DASHED = "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
 OFF = dict(hass_url="", hass_token="", hass_mcp_path="/api/mcp/assist", notion_token="", notion_parent="", github_token="",
-           open_roots=(), pc_control=False)  # тесты не должны зависеть от локального .env
+           open_roots=(), pc_control=False, screen=False, browser=False)  # тесты не должны зависеть от локального .env
 
 
 def settings(tmp_path, **kw) -> Settings:

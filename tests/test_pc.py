@@ -243,7 +243,7 @@ async def test_router_changes_volume_itself_in_one_model_call(tmp_path):
     kw = client.calls[0]
     assert [t["name"] for t in kw["tools"]] == ["delegate", "pc_volume", "pc_media", "pc_open_url", "pc_youtube",
                                               "pc_notify"]
-    assert "pc_volume" in kw["system"] and "Hass" not in kw["system"]  # дома нет — про колонку не упоминаем
+    assert "pc_volume" in kw["system"][0]["text"] and "Hass" not in kw["system"][0]["text"]  # дома нет — про колонку не упоминаем
     tool = [e for e in store.recent() if e["kind"] == "tool"]
     assert tool[0]["name"] == "pc_volume"
 

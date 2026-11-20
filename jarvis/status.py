@@ -82,7 +82,8 @@ class Status:
         if got is None:
             return feature("home", "Умный дом", "down", "Home Assistant не отвечает.",
                            "Проверьте, что Home Assistant запущен и токен действует.")
-        return feature("home", "Умный дом", "ready", "Home Assistant на связи.", tries=[
+        return feature("home", "Умный дом", "ready",
+                       "Home Assistant на связи. Устройства, команды и добавление новых — на вкладке «Дом».", tries=[
             try_("Какие устройства есть дома?", effect="только перечислит, ничего не включит")])
 
     def _features(self) -> list[dict]:
@@ -181,7 +182,7 @@ class Status:
             "name": self.s.assistant_name,
             "wake": list(self.voice.wake.phrases) if self.voice and self.voice.wake else [],
             "mics": len(self.voice.sessions) if self.voice else 0,
-            "agent_today": {"usd": spent, "turns": turns},
+            "spent_today": {"usd": spent, "turns": turns},  # агент и быстрая модель вместе
             "features": features,
         }
 

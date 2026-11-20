@@ -114,6 +114,30 @@ fn show_window(app: tauri::AppHandle) {
     }
 }
 
+/// Открыть ссылку в браузере системы: в окне Tauri ссылки наружу не ведут. Только http и https.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !local::is_web_url(&url) {
+        return Err("открываю только адреса http и https".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        command.arg(&url).spawn().map(|_| ()).map_err(|e| format!("браузер не открылся: {e}"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err("на этой системе ссылки открывает сама страница".to_string())
+}
+
 #[cfg(desktop)]
 fn tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
@@ -165,7 +189,7 @@ pub fn run() {
             });
     }
     builder
-        .invoke_handler(tauri::generate_handler![local_conn, services, service_action, show_window])
+        .invoke_handler(tauri::generate_handler![local_conn, services, service_action, show_window, open_external])
         .setup(|app| {
             #[cfg(desktop)]
             {

@@ -16,6 +16,10 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
+        # По умолчанию WAL сливается в базу раз в 1000 страниц (4 МБ): при редких записях весь журнал неделями
+        # лежит в файле -wal, и копия одного jarvis.db оказывается пустой. Сливаем каждые 100 страниц и при старте.
+        self.db.execute("PRAGMA wal_autocheckpoint=100")
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.db.executescript(
             """
             CREATE TABLE IF NOT EXISTS sessions(
@@ -25,6 +29,7 @@ class Store:
                 channel TEXT, kind TEXT NOT NULL, name TEXT, payload TEXT);
             """
         )
+        self.db.execute("CREATE INDEX IF NOT EXISTS journal_ts ON journal(ts)")  # расход за день, записи за период
         if "cost" not in {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}:
             self.db.execute("ALTER TABLE sessions ADD COLUMN cost REAL NOT NULL DEFAULT 0")
 
@@ -47,9 +52,9 @@ class Store:
     def drop_session(self, user_id: str) -> None:
         self.db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
-    def log(self, user_id: str, channel: str, kind: str, name: str = "", payload=None) -> None:
+    def log(self, user_id: str, channel: str, kind: str, name: str = "", payload=None, ts: float | None = None) -> None:
         text = json.dumps(payload, ensure_ascii=False, default=str)[:4000] if payload is not None else None
-        ts = time.time()
+        ts = time.time() if ts is None else ts
         cur = self.db.execute(
             "INSERT INTO journal(ts,user_id,channel,kind,name,payload) VALUES(?,?,?,?,?,?)",
             (ts, user_id, channel, kind, name, text),
@@ -80,18 +85,18 @@ class Store:
         """Реплики, вызовы инструментов и их результаты по порядку. Из внутренних каналов «*-agent» — только вызовы:
         это действия агента по поручению роутера, а его реплики там — служебные."""
         cur = self.db.execute(
-            "SELECT id, channel, kind, name, payload FROM journal WHERE user_id=? "
+            "SELECT id, ts, channel, kind, name, payload FROM journal WHERE user_id=? "
             "AND kind IN ('user','assistant','tool','tool_result') "
             "AND (kind LIKE 'tool%' OR channel IS NULL OR channel NOT LIKE '%-agent') "
             "ORDER BY id DESC LIMIT ?", (user_id, limit),
         )
-        return [dict(zip(("id", "channel", "kind", "name", "payload"), r)) for r in reversed(cur.fetchall())]
+        return [dict(zip(("id", "ts", "channel", "kind", "name", "payload"), r)) for r in reversed(cur.fetchall())]
 
     def history(self, user_id: str, limit: int = 24) -> list[tuple[str, str]]:
         return [(m["role"], m["text"]) for m in self.messages(user_id, limit)]
 
     def spent(self, since: float) -> tuple[float, int]:
-        """Сколько стоили ходы агента с момента since и сколько их было. Быстрая модель сюда не входит."""
+        """Сколько стоили ходы моделей (агент, быстрая модель) с момента since и сколько их было."""
         total, turns = 0.0, 0
         for (payload,) in self.db.execute(
                 "SELECT payload FROM journal WHERE kind='assistant' AND ts>=? AND payload LIKE '%cost_usd%'", (since,)):
