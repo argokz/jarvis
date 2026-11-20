@@ -32,6 +32,22 @@ export function saveConn(c: Conn): void {
   }
 }
 
+/** Убрать сохранённое подключение: на ПК с ядром токен каждый раз даёт оболочка, хранить его в окне незачем. */
+export function forgetConn(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* не критично */
+  }
+}
+
+/** Есть ли сохранённое вручную подключение к другому ядру: тогда выбор владельца важнее локального .env. */
+export function storedElsewhere(local: Conn): boolean {
+  const saved = loadConn();
+  const same = (a: string, b: string) => a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+  return !!saved.token && !same(saved.server, local.server);
+}
+
 export function httpUrl(c: Conn, path: string): string {
   return c.server.replace(/\/+$/, "") + path;
 }

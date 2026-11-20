@@ -7,6 +7,7 @@ down — настроена, но не отвечает. У функции ес�
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -18,6 +19,7 @@ import httpx
 from . import printing, registry
 from .speech import SpeechError
 
+log = logging.getLogger("jarvis.status")
 PROBE_TIMEOUT = 1.5   # свои серверы речи стоят на этой же машине
 HOME_TIMEOUT = 4.0
 CHECK_PHRASE = "Проверка связи. Меня хорошо слышно?"
@@ -37,7 +39,8 @@ def try_(text: str, via: str = "fast", effect: str = "") -> dict:
 
 class Status:
     def __init__(self, settings, store, speech, home, tunes, scenarios, scheduler, voice, notifier, web=None,
-                 client: httpx.AsyncClient | None = None, env=os.getenv, clock=time.time):
+                 client: httpx.AsyncClient | None = None, env=os.getenv, clock=time.time, backup=None):
+        self.backup = backup
         self.s, self.store, self.speech, self.home, self.tunes = settings, store, speech, home, tunes
         self.scenarios, self.scheduler, self.voice, self.notifier, self.web = scenarios, scheduler, voice, notifier, web
         self._client = client or httpx.AsyncClient(timeout=PROBE_TIMEOUT)
@@ -170,6 +173,11 @@ class Status:
             out.append(feature("push", "Уведомления на телефон", "ready", "Через ntfy: подтверждения, напоминания, будильник."))
         else:
             out.append(feature("push", "Уведомления на телефон", "setup", hint="Задайте NTFY_URL и NTFY_TOPIC."))
+        if self.backup is not None and self.backup.enabled:
+            out.append(feature("backup", "Резервная копия", "ready", self.backup.summary()))
+        else:
+            out.append(feature("backup", "Резервная копия", "off",
+                               hint="Укажите папку в JARVIS_BACKUP_DIR — лучше на другом диске."))
         return out
 
     async def collect(self) -> dict:
@@ -202,3 +210,45 @@ class Status:
             return {**out, "error": str(e)}
         out["ok"] = words(out["heard"]) == words(CHECK_PHRASE)
         return out
+
+
+WATCHED = ("voice", "home")  # то, что сводка опрашивает вживую
+
+
+class Watch:
+    """Сторож: раз в interval секунд смотрит сводку и сообщает, когда функция перестала отвечать и когда вернулась.
+
+    Сообщает после второго неудачного опроса подряд: перезапуск службы на полминуты — не поломка.
+    """
+    def __init__(self, status: Status, notifier, bus=None, interval: float = 300.0, sleep=asyncio.sleep):
+        self.status, self.notifier, self.bus, self.interval, self._sleep = status, notifier, bus, interval, sleep
+        self.fails: dict[str, int] = {}  # функция → сколько опросов подряд она не отвечает
+
+    async def check(self) -> list[str]:
+        said = []
+        for f in (await self.status.collect())["features"]:
+            if f["id"] not in WATCHED:
+                continue
+            before = self.fails.get(f["id"], 0)
+            if f["state"] == "down":
+                self.fails[f["id"]] = before + 1
+                if before == 1:
+                    said.append(f"⚠️ {f['title']}: {f['note']} {f['hint']}".strip())
+            else:
+                self.fails.pop(f["id"], None)
+                if before >= 2:
+                    said.append(f"✅ {f['title']}: снова работает.")
+        for text in said:
+            if self.bus is not None:  # приложение покажет полосу, даже если уведомления не настроены
+                self.bus.publish({"type": "health", "text": text})
+            if self.notifier is not None and self.notifier.available:
+                await self.notifier.send(text, title="Jarvis: состояние")
+        return said
+
+    async def run(self) -> None:
+        while True:
+            await self._sleep(self.interval)
+            try:
+                await self.check()
+            except Exception:
+                log.exception("сторож: опрос не удался")

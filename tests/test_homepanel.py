@@ -39,6 +39,7 @@ FLOWS = [{"flow_id": "F1", "handler": "upnp", "context": {"source": "ssdp", "tit
 WS = {"config/area_registry/list": AREAS, "config/device_registry/list": DEVICES, "config/entity_registry/list": ENTITIES,
       "homeassistant/expose_entity/list": {"exposed_entities": {"light.lamp": {"conversation": True}}},
       "config_entries/flow/progress": FLOWS, "homeassistant/expose_entity": None,
+      "config/entity_registry/update": {"entity_entry": {}}, "config/area_registry/create": {"area_id": "new_room", "name": "Кабинет"},
       "frontend/get_translations": {"resources": {
           "component.androidtv_remote.config.step.pair.title": "Сопряжение",
           "component.androidtv_remote.config.step.pair.description": "Введите код с экрана {name}.",
@@ -242,3 +243,137 @@ def test_home_endpoints_need_the_token_and_explain_a_missing_home(core):
     assert r.status_code == 400 and "не подключён" in r.json()["detail"]
     assert client.post("/home/entity/lock.door", json={"action": "on"}, headers=h).status_code == 400
     assert any(e["name"] == "home_panel" for e in api.store.recent(5))   # команда с вкладки видна в журнале
+
+
+# --- живые состояния -------------------------------------------------------------------------------
+
+class LiveSocket(Socket):
+    """После подписки отдаёт заранее записанные события Home Assistant, потом связь рвётся."""
+    def __init__(self, sent, events):
+        super().__init__(sent)
+        self.events = list(events)
+
+    async def recv(self):
+        await asyncio.sleep(0)          # даём шанс отложенному перечитыванию реестров
+        if self.inbox:
+            return self.inbox.pop(0)
+        if self.events:
+            return json.dumps({"type": "event", "event": self.events.pop(0)})
+        for _ in range(50):             # тишина после событий: отложенное перечитывание успевает отработать
+            await asyncio.sleep(0)
+        raise OSError("связь оборвалась")
+
+    async def send(self, raw):
+        msg = json.loads(raw)
+        if msg["type"] == "subscribe_events":
+            self.sent.append(msg)
+            self.inbox.append(json.dumps({"id": msg["id"], "type": "result", "success": True, "result": None}))
+        else:
+            await super().send(raw)
+
+
+def changed(entity_id, state, **attrs):
+    new = None if state is None else {"entity_id": entity_id, "state": state, "attributes": attrs}
+    return {"event_type": "state_changed", "data": {"entity_id": entity_id, "new_state": new}}
+
+
+def run_live(events):
+    panel, sent, _ = make()
+    sockets = iter([Socket(sent), LiveSocket(sent, events)])   # первый — снимок реестров, второй — подписка
+    panel._connect = lambda address, **kw: next(sockets, None) or Socket(sent)
+    out, pauses = [], []
+
+    async def sleep(seconds):
+        pauses.append(seconds)
+        if seconds == 1.0:              # пауза перед переподключением — на этом тест заканчиваем
+            raise asyncio.CancelledError
+        for _ in range(10):             # пауза «пока стихнет» длится несколько оборотов цикла
+            await asyncio.sleep(0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(panel.live(out.append, sleep=sleep))
+    return panel, sent, out, pauses
+
+
+def test_live_turns_state_changes_into_tab_rows():
+    _, sent, out, _ = run_live([
+        changed("light.lamp", "off", friendly_name="Лампочка", supported_color_modes=["hs"]),
+        changed("sensor.grill_rssi", "-70", device_class="signal_strength"),   # на вкладке его нет — молчим
+        changed("sensor.unknown_new", "1"),
+        changed("switch.grill", "on", friendly_name="Гриль Питание"),
+    ])
+    subscribed = [m["event_type"] for m in sent if m.get("type") == "subscribe_events"]
+    assert subscribed == ["state_changed", "entity_registry_updated", "device_registry_updated", "area_registry_updated"]
+    assert out[0] == {"type": "home", "reload": True}          # связь установлена — клиент перечитывает снимок
+    rows = [e["item"] for e in out[1:]]
+    assert [(r["entity_id"], r["on"]) for r in rows] == [("light.lamp", False), ("switch.grill", True)]
+    lamp = rows[0]
+    assert (lamp["area"], lamp["device"], lamp["exposed"], lamp["name"]) == ("Зал", "Лампа", True, "Лампочка")  # из реестров
+
+
+def test_live_asks_to_reload_when_the_home_itself_changes():
+    panel, _, out, pauses = run_live([
+        {"event_type": "entity_registry_updated", "data": {"action": "create", "entity_id": "light.new"}},
+        {"event_type": "device_registry_updated", "data": {}},   # перезагрузка службы шлёт их пачкой
+        {"event_type": "entity_registry_updated", "data": {}},
+        changed("switch.grill", None),                           # сущность удалена
+    ])
+    assert out.count({"type": "home", "reload": True}) == 3      # связь, пачка реестров разом, удаление
+    assert pauses[0] == 1.5 and pauses[-1] == 1.0                # подождали, пока стихнет; потом переподключение
+
+
+def test_live_keeps_the_voice_mark_after_exposing():
+    panel, _, _ = make()
+    asyncio.run(panel.overview())
+    assert panel._index["switch.grill"][3] is False
+    asyncio.run(panel.expose("switch.grill", True))
+    assert panel._index["switch.grill"][3] is True               # следующее событие придёт уже с отметкой
+
+
+# --- название, комната и имена для голоса -----------------------------------------------------------
+
+def test_overview_carries_what_the_editor_needs():
+    got = asyncio.run(make()[0].overview())
+    assert got["rooms"] == [{"id": "hall", "name": "Зал"}, {"id": "kitchen", "name": "Кухня"}]
+    lamp = next(i for i in got["items"] if i["entity_id"] == "light.lamp")
+    assert (lamp["area_id"], lamp["aliases"], lamp["renamed"]) == ("hall", [], False)
+
+
+def test_rename_move_and_voice_names_go_to_the_registry():
+    panel, sent, _ = make()
+    reset = []
+    panel.changed = lambda: reset.append(1)
+    got = asyncio.run(panel.update("light.lamp", name="  Торшер  у дивана ", area_id="kitchen", aliases=["лампа", " Лампа ", "ночник", ""]))
+    assert got == {"ok": True, "changed": ["aliases", "area_id", "name"]}
+    update = next(m for m in sent if m.get("type") == "config/entity_registry/update")
+    assert update == {"id": 1, "type": "config/entity_registry/update", "entity_id": "light.lamp",
+                      "name": "Торшер у дивана", "area_id": "kitchen", "aliases": ["Лампа", "лампа", "ночник"]}
+    assert reset == [1]                                          # голос сразу узнаёт новые имена
+
+
+def test_empty_name_restores_the_vendor_one_and_a_new_room_is_created_first():
+    panel, sent, _ = make()
+    asyncio.run(panel.update("light.lamp", name="", new_area="Кабинет"))
+    kinds = [m["type"] for m in sent if m.get("type", "").startswith("config/") and "list" not in m["type"]]
+    assert kinds == ["config/area_registry/create", "config/entity_registry/update"]
+    update = next(m for m in sent if m.get("type") == "config/entity_registry/update")
+    assert update["name"] is None and update["area_id"] == "new_room"
+    asyncio.run(panel.update("light.lamp", area_id=""))          # пустая комната — «без комнаты»
+    assert [m for m in sent if m.get("type") == "config/entity_registry/update"][-1]["area_id"] is None
+
+
+@pytest.mark.parametrize("kw", [
+    {},                                         # нечего менять
+    {"name": "я" * 81},
+    {"area_id": "hall; drop"},
+    {"aliases": ["а"] * 11},
+    {"aliases": "лампа"},
+    {"aliases": [5]},
+])
+def test_bad_edits_are_refused_before_home_assistant_sees_them(kw):
+    panel, sent, _ = make()
+    with pytest.raises(PanelError):
+        asyncio.run(panel.update("light.lamp", **kw))
+    assert not any(m.get("type") == "config/entity_registry/update" for m in sent)
+    with pytest.raises(PanelError, match="нет такого устройства"):
+        asyncio.run(panel.update("lock.door", name="Замок"))     # того, чего нет на вкладке, не трогаем

@@ -4,7 +4,8 @@ import {
   type FlowStep, type HomeAction, type HomeItem, type HomeOverview, type SpeechCheck, type StatusReport, type Try,
 } from "./api";
 import { Player, Recorder } from "./audio";
-import { type Conn, loadConn, saveConn, wsUrl } from "./config";
+import { type Conn, forgetConn, loadConn, saveConn, storedElsewhere, wsUrl } from "./config";
+import { applyItem, type Before, cacheable, fromCache, optimistic, rollback, snapshot } from "./home";
 import { desktop, type Service, type ServiceAction } from "./desktop";
 import { Reconnecting, type Status } from "./events";
 import { mergeMessages } from "./messages";
@@ -14,6 +15,14 @@ export type VoicePhase = "idle" | "recording" | "thinking" | "speaking";
 export type Tab = "chat" | "features" | "home" | "tasks" | "scenarios" | "projects" | "settings";
 
 const FAST_KEY = "jarvis.fast";
+const HOME_KEY = "jarvis.home";
+function loadHome(): HomeOverview | null {
+  try {
+    return fromCache(localStorage.getItem(HOME_KEY));
+  } catch {
+    return null;
+  }
+}
 function loadFast(): boolean {
   try {
     return localStorage.getItem(FAST_KEY) === "1";
@@ -30,9 +39,11 @@ export const state = reactive({
   speechCheck: null as SpeechCheck | null,
   checkingSpeech: false,
   services: [] as Service[],
-  home: null as HomeOverview | null,
+  home: loadHome(), // до ответа ядра — последний снимок из кэша: вкладка открывается сразу
+  homeFresh: false, // снимок уже от ядра, а не из кэша
   homeError: "",
-  homeBusy: "", // сущность или служба, с которой сейчас работаем
+  homeBusy: "", // служба производителя, которую сейчас опрашиваем
+  homePending: {} as Record<string, boolean>, // устройства, чья команда ещё не подтверждена домом
   flow: null as FlowStep | null, // открытый шаг мастера добавления устройства
   flowTitle: "",
   serviceBusy: "",
@@ -79,6 +90,13 @@ function handleEvent(e: any): void {
     state.confirmations = [...state.confirmations.filter((x) => x.id !== c.id), c as Confirmation];
   } else if (e.type === "confirm_resolved") {
     state.confirmations = state.confirmations.filter((x) => x.id !== e.id);
+  } else if (e.type === "home") {
+    // живые состояния: ядро пересылает изменения из Home Assistant
+    if (e.reload || !state.home || !applyItem(state.home.items, e.item as HomeItem)) refreshHomeSoon();
+    else if (e.item) settle((e.item as HomeItem).entity_id); // дом подтвердил — команда больше не «ждёт»
+  } else if (e.type === "health") {
+    state.error = String(e.text ?? ""); // сторож ядра: функция перестала отвечать или вернулась
+    void refreshStatus();
   } else if (e.type === "alert") {
     if (e.state === "ringing") void desktop.showWindow();
     void refreshSchedule(); // сработало, выключили или отложили — список изменился
@@ -211,22 +229,94 @@ async function homeCall<T>(fn: () => Promise<T>): Promise<T | undefined> {
 
 export async function refreshHome(): Promise<void> {
   const home = await homeCall(() => api.home());
-  if (home) state.home = home;
+  if (!home) return;
+  state.home = home;
+  state.homeFresh = true;
+  try {
+    localStorage.setItem(HOME_KEY, cacheable(home));
+  } catch {
+    /* кэш — удобство, не обязанность */
+  }
 }
 
-/** Команда устройству. Облачные устройства отвечают не сразу — состояние перечитываем дважды. */
-export async function homeAct(item: HomeItem, action: HomeAction, value?: number): Promise<void> {
-  state.homeBusy = item.entity_id;
+let homeTimer: ReturnType<typeof setTimeout> | undefined;
+/** Состав дома изменился или связь вернулась: перечитать снимок, но не чаще раза в треть секунды. */
+function refreshHomeSoon(): void {
+  clearTimeout(homeTimer);
+  homeTimer = setTimeout(() => void refreshHome(), 300);
+}
+
+const CONFIRM_MS = 5000; // сколько ждать от дома подтверждения команды
+const waiting = new Map<string, { timer: ReturnType<typeof setTimeout>; expect: boolean | null; name: string }>();
+
+function settle(entity: string): void {
+  const w = waiting.get(entity);
+  if (w) clearTimeout(w.timer);
+  waiting.delete(entity);
+  const { [entity]: _done, ...rest } = state.homePending;
+  state.homePending = rest;
+}
+
+/**
+ * Команда устройству: строка меняется сразу, команда уходит ядру. Ядро отказало — строка возвращается
+ * с причиной. Дом не подтвердил за пять секунд — перечитываем снимок и говорим, если вышло иначе.
+ */
+export async function homeAct(item: HomeItem, action: HomeAction, value?: number, was?: Before): Promise<void> {
+  const entity = item.entity_id;
+  const before: Before = was ?? snapshot(item); // was — состояние до протяжки: плитка уже менялась под пальцем
+  const expect = optimistic(item, action, value);
+  settle(entity);
+  state.homePending = { ...state.homePending, [entity]: true };
   try {
-    const done = await homeCall(() => api.homeAct(item.entity_id, action, value));
-    if (!done) return;
-    if (action === "on" || action === "off" || action === "toggle") {
-      if (item.on !== null) item.on = action === "toggle" ? !item.on : action === "on"; // сразу, не дожидаясь облака
-    }
-    setTimeout(() => void refreshHome(), 800);
-    setTimeout(() => void refreshHome(), 3000);
-  } finally {
-    state.homeBusy = "";
+    state.homeError = "";
+    await api.homeAct(entity, action, value);
+  } catch (e) {
+    rollback(item, before);
+    settle(entity);
+    state.homeError = `${item.name}: ${e instanceof Error ? e.message : String(e)}`;
+    return;
+  }
+  const timer = setTimeout(async () => {
+    settle(entity);
+    await refreshHome();
+    const now = state.home?.items.find((i) => i.entity_id === entity);
+    if (expect !== null && now && now.on !== expect) state.homeError = `${item.name}: дом не подтвердил команду`;
+  }, CONFIRM_MS);
+  waiting.set(entity, { timer, expect, name: item.name });
+}
+
+/** Название, комната, имена для голоса. Возвращает текст ошибки или пустую строку. */
+export async function homeSettings(
+  item: HomeItem,
+  patch: { name?: string; area_id?: string; new_area?: string; aliases?: string[] },
+): Promise<string> {
+  try {
+    await api.homeSettings(item.entity_id, patch);
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  await refreshHome();
+  return "";
+}
+
+/** Своя голосовая команда: фразы и шаги сохраняются сценарием в vault. Возвращает текст ошибки или пустую строку. */
+export async function createCommand(name: string, phrases: string[], steps: unknown[]): Promise<string> {
+  try {
+    await api.scenarioCreate({ name, phrases, steps });
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  await refreshScenarios();
+  return "";
+}
+
+export async function scenarioPhrases(id: string, phrases: string[], withoutName: boolean): Promise<string> {
+  try {
+    const updated = await api.scenarioPhrases(id, phrases, withoutName);
+    state.scenarios = state.scenarios.map((s) => (s.id === id ? updated : s));
+    return "";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
   }
 }
 
@@ -285,13 +375,15 @@ export async function setAutostart(on: boolean): Promise<void> {
   state.autostart = await desktop.autostart();
 }
 
-/** На ПК с ядром оболочка сама знает адрес и токен: вводить их руками не нужно. */
+/**
+ * На ПК с ядром оболочка сама знает адрес и токен: вводить их руками не нужно и хранить в окне — тоже.
+ * Сохранённое вручную подключение к другому ядру остаётся в силе, пока владелец не попросит локальное (force).
+ */
 export async function adoptLocal(force = false): Promise<boolean> {
-  if (state.conn.token && !force) return false;
   const local = await desktop.localConn();
-  if (!local?.token) return false;
+  if (!local?.token || (!force && storedElsewhere(local))) return false;
   state.conn = local;
-  saveConn(local);
+  forgetConn();
   return true;
 }
 

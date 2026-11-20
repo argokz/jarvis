@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from . import music, pc, registry, wake
 from .agent import Brain
+from .backup import Backup
 from .config import Settings
 from .confirm import Confirmations
 from .events import EventBus
@@ -28,7 +29,7 @@ from .router import VoiceRouter
 from .scenarios import ScenarioError, Scenarios
 from .schedule import ScheduleError, Scheduler
 from .speech import make_speech
-from .status import Status
+from .status import Status, Watch
 from .store import Store, _text
 from .voice import VoiceService, VoiceSession
 from .wake import WakeWords
@@ -82,7 +83,10 @@ scheduler.has_voice = lambda: bool(voice.sessions)
 scheduler.hooks.append(scenarios.tick)
 panel = Panel(settings.hass_url, settings.hass_token)
 panel.changed = lambda: setattr(home, "_cache", None)  # открыли устройство ассистенту — голос видит его сразу
-status = Status(settings, store, speech, home, tunes, scenarios, scheduler, voice, notifier, web=brain.web)
+backup = Backup(settings.vault, settings.db, settings.backup_dir, settings.backup_keep, settings.backup_hours)
+status = Status(settings, store, speech, home, tunes, scenarios, scheduler, voice, notifier, web=brain.web,
+                backup=backup)
+watch = Watch(status, notifier, bus, interval=settings.watch_min * 60)
 
 
 def journal_event(entry: dict) -> dict:
@@ -109,9 +113,18 @@ async def lifespan(app: FastAPI):
     else:
         log.info("TELEGRAM_BOT_TOKEN не задан — бот выключен")
     log.info("push через ntfy: %s", "включён" if notifier.ntfy else "выключен")
+    side = [asyncio.create_task(watch.run())] if settings.watch_min > 0 else []
+    if backup.enabled:
+        side.append(asyncio.create_task(backup.run()))
+    if panel.enabled and settings.home_live:
+        side.append(asyncio.create_task(panel.live(bus.publish)))
+    log.info("сторож: %s; резервная копия: %s", f"раз в {settings.watch_min:g} мин" if side and settings.watch_min > 0
+             else "выключен", backup.target or "выключена")
     yield
     tunes.player.stop()  # иначе ffplay доиграет очередь уже без ядра
     clock.cancel()
+    for job in side:
+        job.cancel()
     if task:
         task.cancel()
 
@@ -173,6 +186,25 @@ class ExposeIn(BaseModel):
 
 class FlowIn(BaseModel):
     data: dict = {}
+
+
+class DeviceIn(BaseModel):
+    name: str | None = None
+    area_id: str | None = None
+    new_area: str | None = None
+    aliases: list[str] | None = None
+
+
+class PhrasesIn(BaseModel):
+    phrases: list[str]
+    without_name: bool | None = None
+
+
+class ScenarioIn(BaseModel):
+    name: str
+    phrases: list[str] = []
+    steps: list = []
+    without_name: bool = False
 
 
 @app.get("/")
@@ -280,6 +312,26 @@ def _scenario(name: str):
     return scene
 
 
+@app.post("/scenarios")
+async def scenario_create(body: ScenarioIn, user: str = Depends(auth)):
+    """Своя голосовая команда из приложения: фразы и шаги. Владелец собрал её сам — подтверждение не нужно."""
+    try:
+        text = await scenarios.save(body.model_dump(), channel="app", by_owner=True)
+    except ScenarioError as e:
+        raise HTTPException(400, str(e)) from e
+    store.log(user, "app", "tool", "scenario_save", {"name": body.name, "phrases": body.phrases})
+    return {"ok": True, "text": text}
+
+
+@app.post("/scenarios/{name}/phrases")
+async def scenario_phrases(name: str, body: PhrasesIn, user: str = Depends(auth)):
+    _scenario(name)
+    try:
+        return scenarios.public(scenarios.set_phrases(name, body.phrases, body.without_name))
+    except (ScenarioError, OSError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @app.post("/scenarios/{name}/run")
 async def scenario_run(name: str, user: str = Depends(auth)):
     """Запуск кнопкой. Возвращает то, что сценарий сказал; сбой шага — в тексте, а не в коде ответа."""
@@ -320,6 +372,13 @@ async def home_act(entity_id: str, body: HomeActIn, user: str = Depends(auth)):
 async def home_expose(entity_id: str, body: ExposeIn, user: str = Depends(auth)):
     store.log(user, "app", "tool", "home_expose", {"entity_id": entity_id, "exposed": body.exposed})
     return await _panel(panel.expose(entity_id, body.exposed))
+
+
+@app.post("/home/entity/{entity_id}/settings")
+async def home_settings(entity_id: str, body: DeviceIn, user: str = Depends(auth)):
+    """Название, комната и имена для голоса: правится запись устройства в Home Assistant."""
+    store.log(user, "app", "tool", "home_settings", {"entity_id": entity_id, **body.model_dump(exclude_none=True)})
+    return await _panel(panel.update(entity_id, body.name, body.area_id, body.new_area, body.aliases))
 
 
 @app.post("/home/integrations/{entry_id}/reload")

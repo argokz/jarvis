@@ -144,9 +144,9 @@ const micLabel: Record<string, string> = {
 .mic { font-size: 18px; touch-action: none; user-select: none; }
 .fast { opacity: .55; }
 .fast.on { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.mic.recording { background: var(--danger); border-color: var(--danger); color: #fff; animation: pulse 1s infinite; }
+.mic.recording { background: var(--danger); border-color: var(--danger); color: var(--bg); animation: pulse 1s infinite; }
 .mic.thinking { opacity: .7; }
-.mic.speaking { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mic.speaking { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger) 30%, transparent); } }
 .hint { text-align: center; padding: 0 16px 8px; }
 </style>

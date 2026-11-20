@@ -95,10 +95,14 @@ export interface HomeItem {
   temperature?: number | null;
   current?: number | null;
   position?: number;
+  area_id?: string;
+  aliases?: string[]; // как ещё называть устройство голосом
+  renamed?: boolean;
 }
 export interface HomeOverview {
   url: string;
   areas: string[];
+  rooms?: { id: string; name: string }[];
   items: HomeItem[];
   integrations: { entry_id: string; domain: string; title: string; state: string; devices: number }[];
   discovered: { flow_id: string; handler: string; title: string }[];
@@ -205,6 +209,18 @@ export class Api {
     this.req<{ ok: boolean }>(`/home/entity/${encodeURIComponent(id)}/expose`, {
       method: "POST",
       body: JSON.stringify({ exposed }),
+    });
+  homeSettings = (id: string, patch: { name?: string; area_id?: string; new_area?: string; aliases?: string[] }) =>
+    this.req<{ ok: boolean }>(`/home/entity/${encodeURIComponent(id)}/settings`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+  scenarioCreate = (body: { name: string; phrases: string[]; steps: unknown[]; without_name?: boolean }) =>
+    this.req<{ ok: boolean; text: string }>("/scenarios", { method: "POST", body: JSON.stringify(body) });
+  scenarioPhrases = (id: string, phrases: string[], without_name?: boolean) =>
+    this.req<Scenario>(`/scenarios/${encodeURIComponent(id)}/phrases`, {
+      method: "POST",
+      body: JSON.stringify({ phrases, without_name }),
     });
   homeReload = (entry: string) =>
     this.req<{ ok: boolean }>(`/home/integrations/${encodeURIComponent(entry)}/reload`, { method: "POST" });

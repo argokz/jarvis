@@ -1,42 +1,12 @@
-:root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #eef0f4;
-  --text: #15181e;
-  --muted: #646b78;
-  --line: #dde1e8;
-  --accent: #2f6df6;
-  --accent-text: #ffffff;
-  --mine: #2f6df6;
-  --mine-text: #ffffff;
-  --ok: #1e9e5a;
-  --warn: #c77700;
-  --danger: #d33a3a;
-  --radius: 14px;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115;
-    --surface: #171a21;
-    --surface-2: #20242d;
-    --text: #e8eaef;
-    --muted: #9aa1ad;
-    --line: #2a2f3a;
-    --accent: #5b8cff;
-    --mine: #3a6ff0;
-    --ok: #3ccf7f;
-    --warn: #f0a640;
-    --danger: #ff6b6b;
-    color-scheme: dark;
-  }
-}
+/* Цвета, радиус и скорость анимаций задаёт src/tokens.json (см. lib/tokens.ts): тёмная тема по умолчанию. */
+:root { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums; /* цифры одной ширины: показания не «прыгают» при обновлении */
   -webkit-tap-highlight-color: transparent;
 }
 button, input, textarea { font: inherit; color: inherit; }
@@ -47,6 +17,9 @@ button {
   padding: 8px 14px;
   cursor: pointer;
 }
+button { transition: background var(--motion), border-color var(--motion), opacity var(--motion); }
+button:hover:not(:disabled) { background: var(--surface-2); }
+button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { color: var(--danger); }
