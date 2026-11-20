@@ -4,8 +4,9 @@ import type { HomeItem } from "./api";
 import { Desktop } from "./desktop";
 import { Gesture, levelAt, LONG_MS } from "./gesture";
 import {
-  applyItem, cacheable, commandName, deviceStep, fromCache, groupHome, iconOf, layoutRooms, levelOf, optimistic, pillOf,
-  pills, reading, rollback, shortName, snapshot, stateText, tileState, tone,
+  applyItem, cacheable, commandName, deviceStep, fromCache, groupHome, iconOf, layoutRooms, levelOf, nowView, optimistic,
+  pillOf,
+  pills, quiet, reading, rollback, shortName, snapshot, stateText, tileState, tone,
 } from "./home";
 import { applyTokens, contrast, cssVars, tokens } from "./tokens";
 import { seconds, shortPath, usd } from "./format";
@@ -324,6 +325,31 @@ describe("tile gestures and layout", () => {
     expect(hall.tiles.map((i) => i.entity_id)).toEqual(["light.l", "light.2"]);
     expect(hall.sensors.map((i) => i.entity_id)).toEqual(["sensor.t"]); // недоступный датчик в заголовок не идёт
     expect([hall.folded.length, hall.folded[0].items.length, hall.lightsOn.length]).toEqual([1, 4, 2]);
+  });
+  it("shows on the Now screen only what is on or lost", () => {
+    const items = [
+      row({}), row({ entity_id: "light.off", on: false }),
+      row({ entity_id: "switch.cfg", domain: "switch", secondary: true }),          // настройка устройства — не «сейчас»
+      row({ entity_id: "switch.gone", domain: "switch", available: false, on: null }),
+      row({ entity_id: "button.ir", domain: "button", available: false, on: null }), // пульт без связи — не поломка
+      row({ entity_id: "sensor.t", domain: "sensor", kind: "temperature", control: false, on: null }),
+    ];
+    const now = nowView(items);
+    expect(now.active.map((i) => i.entity_id)).toEqual(["light.l"]);
+    expect(now.offline.map((i) => i.entity_id)).toEqual(["switch.gone"]);
+    expect(nowView([row({ on: false })])).toEqual({ active: [], offline: [], busy: [] });
+  });
+  it("keeps a many-row device from flooding the summary and the Now screen", () => {
+    const grill = (n: number, on: boolean) =>
+      row({ entity_id: `switch.g${n}`, domain: "switch", name: `Гриль режим ${n}`, device: "Гриль", area: "Кухня", on });
+    const items = [row({}), grill(1, true), grill(2, true), grill(3, false), grill(4, true)];
+    expect(quiet(items).map((i) => i.entity_id)).toEqual(["light.l"]);
+    expect(pills(items).map((p) => p.text)).toEqual(["💡 1 вкл"]); // три «включённых» режима гриля — не три розетки
+    const now = nowView(items);
+    expect(now.active.map((i) => i.entity_id)).toEqual(["light.l"]);
+    expect(now.busy.map((g) => [g.device, g.items.length])).toEqual([["Гриль", 3]]); // гриль — одной строкой
+    const small = [row({ entity_id: "switch.a", domain: "switch", device: "Розетка" }), row({ entity_id: "sensor.w", domain: "sensor", control: false, on: null, device: "Розетка" })];
+    expect(quiet(small)).toHaveLength(2); // у обычной розетки две строки — она остаётся
   });
   it("rounds sensor readings for people", () => {
     const sensor = (state: string, unit = "") => row({ domain: "sensor", control: false, on: null, state, unit });

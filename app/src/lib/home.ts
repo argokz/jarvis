@@ -106,7 +106,8 @@ export function pillOf(i: HomeItem): PillKind | null {
 }
 
 /** Итоги сверху вкладки: сколько света и розеток включено, что играет, температура, что не на связи. */
-export function pills(items: HomeItem[]): Pill[] {
+export function pills(all: HomeItem[]): Pill[] {
+  const items = quiet(all);
   const count = (kind: PillKind) => items.filter((i) => pillOf(i) === kind).length;
   const out: Pill[] = [];
   if (count("light")) out.push({ kind: "light", text: `💡 ${count("light")} вкл` });
@@ -224,4 +225,35 @@ export function reading(i: HomeItem): string {
   const n = Number(i.state);
   const value = i.state.trim() !== "" && Number.isFinite(n) ? String(Math.round(n * 100) / 100).replace(".", ",") : i.state;
   return i.unit ? `${value} ${i.unit}` : value;
+}
+
+// --- экран «Сейчас» --------------------------------------------------------------------------------
+
+/**
+ * Строки без «многострочных» устройств. У аэрогриля или пульта десяток тумблеров и кнопок: семь из них
+ * «включены» всегда, и в итогах и на экране «Сейчас» они заслоняли бы настоящие лампы и розетки.
+ */
+export function quiet(items: HomeItem[]): HomeItem[] {
+  const rows = new Map<string, number>();
+  const key = (i: HomeItem) => `${i.area}\u0000${i.device}`;
+  for (const i of items) if (i.device && !i.secondary) rows.set(key(i), (rows.get(key(i)) ?? 0) + 1);
+  return items.filter((i) => !i.device || (rows.get(key(i)) ?? 0) < FOLD_FROM);
+}
+
+/** То, на что стоит смотреть прямо сейчас: включённое и то, что пропало со связи. Остальной дом — на «Все». */
+export function nowView(items: HomeItem[]): { active: HomeItem[]; offline: HomeItem[]; busy: HomeGroup[] } {
+  const main = quiet(items).filter((i) => i.control && !i.secondary);
+  const kept = new Set(main.map((i) => i.entity_id));
+  const busy = new Map<string, HomeGroup>(); // многострочные устройства, у которых что-то включено, — одной строкой
+  for (const i of items) {
+    if (kept.has(i.entity_id) || !i.control || i.secondary || !i.available || i.on !== true) continue;
+    const group = busy.get(i.device) ?? { device: i.device, items: [], fold: true };
+    group.items.push(i);
+    busy.set(i.device, group);
+  }
+  return {
+    active: main.filter((i) => i.available && i.on === true),
+    offline: main.filter((i) => pillOf(i) === "offline"),
+    busy: [...busy.values()],
+  };
 }
