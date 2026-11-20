@@ -23,7 +23,7 @@ from .config import Settings
 from .confirm import Confirmations
 from .events import EventBus
 from .home import Home
-from .homepanel import Panel, PanelError
+from .homepanel import Panel, PanelError, simple_view
 from .notify import Notifier
 from .router import VoiceRouter
 from .scenarios import ScenarioError, Scenarios
@@ -136,26 +136,49 @@ if WEB_DIST.is_dir():  # веб-клиент: тот же, что в Tauri; уд
     app.mount("/app", StaticFiles(directory=WEB_DIST, html=True), name="app")
 
 
+def role_of(authorization: str) -> str | None:
+    """Чей это токен: owner — владелец, simple — «простой» профиль; None — ничей."""
+    for role, token in (("owner", settings.api_token), ("simple", settings.simple_token)):
+        if token and hmac.compare_digest(authorization.encode(), f"Bearer {token}".encode()):
+            return role
+    return None
+
+
 def token_ok(authorization: str) -> bool:
-    return bool(settings.api_token) and hmac.compare_digest(authorization, f"Bearer {settings.api_token}")
+    return role_of(authorization) == "owner"
 
 
 def auth(authorization: str = Header(default="")) -> str:
+    """Только владелец. «Простому» профилю — 403: токен верный, но этого ему нельзя."""
     if not settings.api_token:
         raise HTTPException(503, "JARVIS_API_TOKEN не задан — HTTP API выключен")
-    if not token_ok(authorization):
+    role = role_of(authorization)
+    if role is None:
         raise HTTPException(401, "неверный токен")
+    if role != "owner":
+        raise HTTPException(403, "этому профилю это недоступно")
     return "owner"
 
 
-async def ws_auth(ws: WebSocket) -> bool:
+def auth_any(authorization: str = Header(default="")) -> str:
+    """Владелец или «простой» профиль; возвращает роль."""
+    if not settings.api_token:
+        raise HTTPException(503, "JARVIS_API_TOKEN не задан — HTTP API выключен")
+    role = role_of(authorization)
+    if role is None:
+        raise HTTPException(401, "неверный токен")
+    return role
+
+
+async def ws_auth(ws: WebSocket, roles: tuple[str, ...] = ("owner",)) -> str | None:
     # токен — в заголовке Authorization или (браузеры не умеют заголовки у WebSocket) в ?token=
     header = ws.headers.get("authorization") or f"Bearer {ws.query_params.get('token', '')}"
-    if not token_ok(header):
+    role = role_of(header)
+    if role not in roles:
         await ws.close(code=4401)
-        return False
+        return None
     await ws.accept()
-    return True
+    return role
 
 
 class ChatIn(BaseModel):
@@ -186,6 +209,10 @@ class ExposeIn(BaseModel):
 
 class FlowIn(BaseModel):
     data: dict = {}
+
+
+class SayIn(BaseModel):
+    text: str
 
 
 class DeviceIn(BaseModel):
@@ -356,16 +383,59 @@ async def _panel(call):
         raise HTTPException(502 if "недоступен" in str(e) or "ответил" in str(e) else 400, str(e)) from e
 
 
+@app.get("/me")
+async def me(role: str = Depends(auth_any)):
+    """Кто подключился: приложение по роли решает, какой интерфейс показать."""
+    return {"role": role, "name": settings.assistant_name}
+
+
 @app.get("/home")
-async def home_overview(user: str = Depends(auth)):
-    """Вкладка «Дом»: устройства по комнатам, службы производителей, найденное в сети."""
-    return await _panel(panel.overview())
+async def home_overview(role: str = Depends(auth_any)):
+    """Вкладка «Дом»: устройства по комнатам, службы производителей, найденное в сети.
+
+    «Простому» профилю — только устройства, открытые ассистенту, без служб и настроек.
+    """
+    overview = await _panel(panel.overview())
+    return overview if role == "owner" else simple_view(overview)
 
 
 @app.post("/home/entity/{entity_id}")
-async def home_act(entity_id: str, body: HomeActIn, user: str = Depends(auth)):
-    store.log(user, "app", "tool", "home_panel", {"entity_id": entity_id, "action": body.action, "value": body.value})
+async def home_act(entity_id: str, body: HomeActIn, role: str = Depends(auth_any)):
+    if role != "owner":
+        if not panel._index:
+            await _panel(panel.overview())
+        if not panel.allowed(entity_id):
+            raise HTTPException(403, "этому профилю это устройство недоступно")
+    store.log(role, "app", "tool", "home_panel", {"entity_id": entity_id, "action": body.action, "value": body.value})
     return await _panel(panel.act(entity_id, body.action, body.value))
+
+
+@app.post("/home/entity/{entity_id}/say")
+async def home_say(entity_id: str, body: SayIn, user: str = Depends(auth)):
+    """Произнести текст на колонке (Яндекс Станция)."""
+    store.log(user, "app", "tool", "home_say", {"entity_id": entity_id, "text": body.text[:300]})
+    return await _panel(panel.say(entity_id, body.text))
+
+
+_help_at = 0.0
+
+
+@app.post("/help")
+async def call_for_help(role: str = Depends(auth_any)):
+    """Кнопка «Позвать» в простом профиле: владелец получает уведомление и слышит фразу. Не чаще раза в 30 секунд."""
+    global _help_at
+    now = asyncio.get_running_loop().time()
+    if now - _help_at < 30:
+        return {"ok": True, "repeated": True}
+    _help_at = now
+    text = "🆘 Вас зовут: в приложении нажали «Позвать»."
+    store.log(role, "app", "alert", "help", text)
+    bus.publish({"type": "health", "text": text})
+    if notifier.available:
+        await notifier.send(text, title="Jarvis", priority=5)
+    with contextlib.suppress(Exception):
+        await voice.announce("Вас зовут.")
+    return {"ok": True, "repeated": False}
 
 
 @app.post("/home/entity/{entity_id}/expose")
@@ -399,16 +469,31 @@ async def home_flow_answer(flow_id: str, body: FlowIn, user: str = Depends(auth)
 
 @app.websocket("/events/ws")
 async def events_ws(ws: WebSocket):
-    """Живая лента: реплики из всех каналов, вызовы инструментов, запросы подтверждения."""
-    if not await ws_auth(ws):
+    """Живая лента: реплики из всех каналов, вызовы инструментов, запросы подтверждения.
+
+    «Простому» профилю идут только изменения открытых ему устройств: ни разговоров, ни журнала.
+    """
+    role = await ws_auth(ws, ("owner", "simple"))
+    if role is None:
         return
+    owner = role == "owner"
     q = bus.subscribe()
     try:
-        await ws.send_text(json.dumps({"type": "hello", "pending": confirms.pending()}, ensure_ascii=False))
+        await ws.send_text(json.dumps({"type": "hello", "pending": confirms.pending() if owner else []}, ensure_ascii=False))
+
+        def visible(event: dict) -> bool:
+            if owner:
+                return True
+            if event.get("type") != "home":
+                return False
+            item = event.get("item")
+            return bool(event.get("reload")) or bool(item and item.get("exposed") and item.get("control"))
 
         async def pump():
             while True:
-                await ws.send_text(json.dumps(await q.get(), ensure_ascii=False))
+                event = await q.get()
+                if visible(event):
+                    await ws.send_text(json.dumps(event, ensure_ascii=False))
 
         async def drain():  # входящие игнорируем, ждём только закрытия
             while (await ws.receive())["type"] != "websocket.disconnect":
@@ -426,5 +511,5 @@ async def events_ws(ws: WebSocket):
 
 @app.websocket("/voice/ws")
 async def voice_ws(ws: WebSocket):
-    if await ws_auth(ws):
+    if await ws_auth(ws):  # голос — только владельцу
         await VoiceSession(ws, voice).run()
