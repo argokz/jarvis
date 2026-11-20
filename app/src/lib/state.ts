@@ -34,6 +34,8 @@ function loadFast(): boolean {
 export const state = reactive({
   conn: loadConn() as Conn,
   tab: "chat" as Tab,
+  role: "owner" as "owner" | "simple", // «простой» профиль: только плитки открытых ему устройств
+  assistant: "", // имя ассистента от ядра (у простого профиля сводки /status нет)
   fast: loadFast(), // сообщения из чата отвечает быстрая модель и вслух — как голосу
   report: null as StatusReport | null,
   speechCheck: null as SpeechCheck | null,
@@ -390,9 +392,38 @@ export async function adoptLocal(force = false): Promise<boolean> {
 
 export function connect(): void {
   if (!state.conn.token) return;
-  events.restart();
-  void refreshAll();
-  void refreshStatus(); // имя ассистента нужно подсказкам на всех вкладках
+  void (async () => {
+    const who = await guard(() => api.me()); // по роли решаем, что этому подключению показывать и запрашивать
+    state.role = who?.role === "simple" ? "simple" : "owner";
+    state.assistant = who?.name ?? "";
+    events.restart();
+    if (state.role === "simple") {
+      void refreshHome(); // остального простому профилю ядро не отдаст
+      return;
+    }
+    void refreshAll();
+    void refreshStatus(); // имя ассистента нужно подсказкам на всех вкладках
+  })();
+}
+
+/** Произнести фразу на колонке. Возвращает текст ошибки или пустую строку. */
+export async function homeSay(item: HomeItem, text: string): Promise<string> {
+  try {
+    await api.homeSay(item.entity_id, text);
+    return "";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Кнопка «Позвать» простого профиля: владелец получит уведомление. */
+export async function callHelp(): Promise<string> {
+  try {
+    const r = await api.help();
+    return r.repeated ? "Уже позвали — подождите немного." : "Позвали. Сейчас подойдут.";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
 }
 
 export function updateConn(c: Conn): void {

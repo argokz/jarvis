@@ -377,3 +377,33 @@ def test_bad_edits_are_refused_before_home_assistant_sees_them(kw):
     assert not any(m.get("type") == "config/entity_registry/update" for m in sent)
     with pytest.raises(PanelError, match="нет такого устройства"):
         asyncio.run(panel.update("lock.door", name="Замок"))     # того, чего нет на вкладке, не трогаем
+
+
+# --- сказать на колонке и «простой» профиль -----------------------------------------------------------
+
+def test_say_speaks_only_on_speakers_that_can():
+    panel, _, calls = make()
+    panel._index = {"media_player.station": ({"platform": "yandex_station"}, {}, "Зал", True),
+                    "media_player.tv": ({"platform": "cast"}, {}, "", True),
+                    "light.lamp": ({"platform": "yandex_station"}, {}, "Зал", True)}
+    assert asyncio.run(panel.say("media_player.station", "  Ужин   готов ")) == {"ok": True}
+    assert calls == [("POST", "/api/services/media_player/play_media",
+                      {"entity_id": "media_player.station", "media_content_type": "text", "media_content_id": "Ужин готов"})]
+    for entity, text in (("media_player.tv", "привет"), ("light.lamp", "привет"), ("media_player.station", "   "),
+                         ("media_player.station", "я" * 301)):
+        with pytest.raises(PanelError):
+            asyncio.run(panel.say(entity, text))
+    assert len(calls) == 1
+    made = item({"entity_id": "media_player.station", "state": "idle", "attributes": {}}, {"platform": "yandex_station"}, {}, "", True)
+    assert made["speaks"] and not item({"entity_id": "media_player.tv", "state": "off", "attributes": {}}, {"platform": "cast"}, {}, "", True)["speaks"]
+
+
+def test_simple_profile_sees_only_what_the_owner_opened_to_the_assistant():
+    from jarvis.homepanel import simple_view
+
+    panel, _, _ = make()
+    full = asyncio.run(panel.overview())
+    got = simple_view(full)
+    assert [i["entity_id"] for i in got["items"]] == ["light.lamp"]          # открыта только лампа
+    assert got["integrations"] == [] and got["discovered"] == [] and got["url"] == "" and got["rooms"] == []
+    assert panel.allowed("light.lamp") and not panel.allowed("switch.grill") and not panel.allowed("lock.door")

@@ -98,6 +98,7 @@ export interface HomeItem {
   area_id?: string;
   aliases?: string[]; // как ещё называть устройство голосом
   renamed?: boolean;
+  speaks?: boolean; // колонка умеет произнести текст
 }
 export interface HomeOverview {
   url: string;
@@ -172,6 +173,10 @@ export class Api {
     return r.json() as Promise<T>;
   }
 
+  me = () => this.req<{ role: "owner" | "simple"; name: string }>("/me");
+  homeSay = (id: string, text: string) =>
+    this.req<{ ok: boolean }>(`/home/entity/${encodeURIComponent(id)}/say`, { method: "POST", body: JSON.stringify({ text }) });
+  help = () => this.req<{ ok: boolean; repeated: boolean }>("/help", { method: "POST" });
   health = () => this.req<{ ok: boolean; model: string }>("/health");
   messages = (limit = 100) => this.req<Message[]>(`/messages?limit=${limit}`);
   journal = (limit = 100) => this.req<JournalEvent[]>(`/journal?limit=${limit}`);
