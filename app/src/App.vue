@@ -31,6 +31,7 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
+    <div class="body">
     <header class="top">
       <strong>Jarvis</strong>
       <span class="status" :class="state.status" :title="state.conn.server">
@@ -57,9 +58,13 @@ onMounted(async () => {
       <ProjectsView v-else-if="state.tab === 'projects'" />
       <SettingsView v-else @saved="state.tab = 'chat'" />
     </main>
+    </div>
 
-    <nav class="tabs">
-      <button v-for="t in tabs" :key="t.id" :class="{ active: state.tab === t.id }" @click="state.tab = t.id">
+    <nav class="tabs" aria-label="Разделы">
+      <button
+        v-for="t in tabs" :key="t.id" :class="{ active: state.tab === t.id }"
+        :aria-current="state.tab === t.id ? 'page' : undefined" :title="t.label" @click="state.tab = t.id"
+      >
         <span class="icon">{{ t.icon }}</span>
         <span>{{ t.label }}</span>
         <b v-if="t.id === 'tasks' && state.confirmations.length" class="dot">{{ state.confirmations.length }}</b>
@@ -69,14 +74,14 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* Телефон: разделы внизу, под большим пальцем. Широкий экран: разделы слева, содержимому — вся ширина. */
 .shell {
   height: 100%;
   display: flex;
   flex-direction: column;
-  max-width: 820px;
-  margin: 0 auto;
   padding-top: env(safe-area-inset-top);
 }
+.body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .top {
   display: flex;
   justify-content: space-between;
@@ -103,6 +108,8 @@ onMounted(async () => {
 .ring span { flex: 1; min-width: 150px; font-weight: 600; }
 .error { background: color-mix(in srgb, var(--danger) 16%, transparent); }
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* разговор и списки не растягиваются на весь монитор: длинные строки читать трудно; дом — сеткой во всю ширину */
+main > :deep(*:not(.home)) { width: 100%; max-width: 820px; margin-left: auto; margin-right: auto; }
 .tabs {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -122,15 +129,39 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   font-size: 11px;
   color: var(--muted);
   position: relative;
+  min-height: 52px;
+  min-width: 0;
 }
+.tabs button span:not(.icon) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tabs button.active { color: var(--accent); }
+.tabs button:hover:not(:disabled) { background: none; color: var(--text); }
+/* узкий телефон: семь подписей не помещаются — подпись только у открытого раздела */
+@media (max-width: 479px) {
+  .tabs button:not(.active) span:not(.icon) { display: none; }
+  .tabs .icon { font-size: 22px; }
+}
+@media (min-width: 900px) {
+  .shell { flex-direction: row; }
+  .tabs {
+    order: -1;
+    display: flex;
+    flex-direction: column;
+    width: 92px;
+    padding: 12px 6px env(safe-area-inset-bottom);
+    gap: 4px;
+    border-top: 0;
+    border-right: 1px solid var(--line);
+  }
+  .tabs button { border-radius: 12px; min-height: 60px; }
+  .tabs button.active { background: var(--surface-2); }
+}
 .tabs .icon { font-size: 19px; }
 .dot {
   position: absolute;
   top: 4px;
   left: calc(50% + 8px);
   background: var(--danger);
-  color: #fff;
+  color: var(--bg);
   border-radius: 999px;
   font-size: 11px;
   padding: 0 6px;

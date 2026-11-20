@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from urllib.parse import urlsplit
@@ -16,6 +17,9 @@ import websockets
 log = logging.getLogger("jarvis.homepanel")
 TIMEOUT = 10.0   # облачные устройства отвечают не сразу
 ASSISTANT = "conversation"   # так Home Assistant называет встроенный Assist; его же видит MCP-сервер
+# Изменился состав дома (новое устройство, переименование, другая комната) — клиент перечитывает снимок.
+REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_registry_updated")
+RELOAD_PAUSE = 1.5   # перезагрузка службы шлёт десятки таких событий подряд — ждём, пока стихнет
 
 # Чем можно управлять с вкладки. Замков и сигнализаций здесь нет: им нужно подтверждение, а не кнопка.
 CONTROLS = frozenset({"light", "switch", "fan", "cover", "climate", "media_player", "vacuum", "humidifier",
@@ -51,6 +55,16 @@ def number(value, low: float, high: float, what: str) -> float:
     if not low <= n <= high:
         raise PanelError(f"{what}: от {low:g} до {high:g}")
     return n
+
+
+def clean(value, limit: int, what: str) -> str:
+    """Строка от владельца для реестра Home Assistant: без управляющих знаков, с пределом длины."""
+    if not isinstance(value, str):
+        raise PanelError(f"{what}: нужна строка")
+    text = " ".join(value.split())
+    if len(text) > limit or any(ord(c) < 32 for c in text):
+        raise PanelError(f"{what}: не длиннее {limit} знаков")
+    return text
 
 
 def service_call(entity_id: str, action: str, value=None) -> tuple[str, str, dict]:
@@ -100,6 +114,9 @@ def item(state: dict, entry: dict, device: dict, area: str, exposed: bool) -> di
         "state": ("" if press else value) if available else "недоступно",
         "on": (value in ON_STATES) if control and available and not press else None,
         "entry_id": entry.get("config_entry_id") or "",
+        "area_id": entry.get("area_id") or device.get("area_id") or "",
+        "aliases": sorted(str(a) for a in entry.get("aliases") or []),  # как ещё называть устройство голосом
+        "renamed": bool(entry.get("name")),  # имя задано владельцем, а не производителем
         "unit": attrs.get("unit_of_measurement") or "",
     }
     if domain == "light" and attrs.get("brightness") is not None:
@@ -122,19 +139,29 @@ class Panel:
         self._client = client or httpx.AsyncClient(timeout=TIMEOUT)
         self._connect = connect
         self.changed = lambda: None  # ядро подставит сброс кэша у home.Home: голос должен сразу увидеть новое
+        # что показываем на вкладке: сущность → (запись реестра, устройство, комната, открыта ли ассистенту);
+        # по нему событие об изменении состояния превращается в строку вкладки без нового опроса реестров
+        self._index: dict[str, tuple[dict, dict, str, bool]] = {}
+        self.live_ok = False  # подписка на изменения сейчас установлена
 
-    async def _ws(self, *commands: dict) -> list:
-        """Одно соединение: вход по токену, команды по очереди, результаты в том же порядке."""
+    def _socket(self):
         if not self.enabled:
             raise PanelError("Home Assistant не подключён: задайте HASS_URL и HASS_TOKEN")
         parts = urlsplit(self.url)
         address = f"{'wss' if parts.scheme == 'https' else 'ws'}://{parts.netloc}/api/websocket"
+        return self._connect(address, open_timeout=TIMEOUT, max_size=16 * 2**20)
+
+    async def _login(self, ws) -> None:
+        await ws.recv()  # auth_required
+        await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+        if json.loads(await ws.recv()).get("type") != "auth_ok":
+            raise PanelError("Home Assistant не принял токен")
+
+    async def _ws(self, *commands: dict) -> list:
+        """Одно соединение: вход по токену, команды по очереди, результаты в том же порядке."""
         try:
-            async with self._connect(address, open_timeout=TIMEOUT, max_size=16 * 2**20) as ws:
-                await ws.recv()  # auth_required
-                await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
-                if json.loads(await ws.recv()).get("type") != "auth_ok":
-                    raise PanelError("Home Assistant не принял токен")
+            async with self._socket() as ws:
+                await self._login(ws)
                 out = []
                 for i, command in enumerate(commands, 1):
                     await ws.send(json.dumps({"id": i, **command}))
@@ -170,14 +197,17 @@ class Panel:
         device_by = {d["id"]: d for d in devices}
         entry_by = {e["entity_id"]: e for e in entities}
         shown = (exposed or {}).get("exposed_entities") or {}
-        items = []
+        items, index = [], {}
         for state in states:
             entry = entry_by.get(state["entity_id"], {})
             device = device_by.get(entry.get("device_id"), {})
             area = area_name.get(entry.get("area_id") or device.get("area_id"), "")
-            made = item(state, entry, device, area, bool((shown.get(state["entity_id"]) or {}).get(ASSISTANT)))
+            known = (entry, device, area, bool((shown.get(state["entity_id"]) or {}).get(ASSISTANT)))
+            made = item(state, *known)
             if made:
                 items.append(made)
+                index[state["entity_id"]] = known
+        self._index = index
         items.sort(key=lambda i: (i["area"] == "", i["area"], not i["control"], i["secondary"], i["name"].lower()))
         used: dict[str, int] = {}  # служба производителя → сколько её строк на вкладке
         for i in items:
@@ -193,6 +223,7 @@ class Panel:
         return {
             "url": self.url,
             "areas": sorted({i["area"] for i in items if i["area"]}),
+            "rooms": sorted(({"id": a["area_id"], "name": a["name"]} for a in areas), key=lambda r: r["name"].lower()),
             "items": items,
             # службы производителей, через которые приходят устройства: их можно опросить заново
             "integrations": [{"entry_id": e["entry_id"], "domain": e["domain"], "title": e.get("title") or e["domain"],
@@ -212,8 +243,95 @@ class Panel:
             raise PanelError(f"нет такой сущности: {entity_id}")
         await self._ws({"type": "homeassistant/expose_entity", "assistants": [ASSISTANT],
                         "entity_ids": [entity_id], "should_expose": bool(exposed)})
+        if entity_id in self._index:
+            self._index[entity_id] = (*self._index[entity_id][:3], bool(exposed))
         self.changed()
         return {"ok": True, "exposed": bool(exposed)}
+
+    async def update(self, entity_id: str, name: str | None = None, area_id: str | None = None,
+                     new_area: str | None = None, aliases: list | None = None) -> dict:
+        """Переименовать устройство, перенести в комнату (или в новую), задать имена для голоса.
+
+        Меняется запись в реестре Home Assistant — так же, как если бы владелец правил её там. None — не трогать;
+        пустое имя возвращает название производителя, пустая комната — «без комнаты».
+        """
+        if entity_id not in self._index:
+            await self.overview()
+        if entity_id not in self._index:
+            raise PanelError(f"нет такого устройства на вкладке: {entity_id}")
+        change: dict = {}
+        if name is not None:
+            change["name"] = clean(name, 80, "название") or None
+        if new_area is not None and clean(new_area, 40, "комната"):
+            (made,) = await self._ws({"type": "config/area_registry/create", "name": clean(new_area, 40, "комната")})
+            change["area_id"] = made["area_id"]
+        elif area_id is not None:
+            if area_id and not all(c.isalnum() or c == "_" for c in area_id):
+                raise PanelError("неверный идентификатор комнаты")
+            change["area_id"] = area_id or None
+        if aliases is not None:
+            if not isinstance(aliases, list) or len(aliases) > 10:
+                raise PanelError("имён для голоса — не больше десяти")
+            names = [clean(a, 60, "имя для голоса") for a in aliases]
+            change["aliases"] = sorted({n for n in names if n})
+        if not change:
+            raise PanelError("нечего менять")
+        await self._ws({"type": "config/entity_registry/update", "entity_id": entity_id, **change})
+        self.changed()
+        await self.overview()  # индекс: живые события пойдут уже с новым именем и комнатой
+        return {"ok": True, "changed": sorted(change)}
+
+    # --- живые состояния ------------------------------------------------------------------------------
+
+    async def live(self, publish, sleep=asyncio.sleep) -> None:
+        """Держит подписку на изменения в Home Assistant и отдаёт их в publish; переподключается сам.
+
+        Событие {"type": "home", "item": строка} — устройство изменилось; {"type": "home", "reload": true} —
+        изменился состав дома или связь восстановилась: клиенту нужно перечитать снимок.
+        """
+        delay = 1.0
+        while True:
+            pending: asyncio.Task | None = None
+            try:
+                await self.overview()  # индекс: что показываем и где оно стоит
+                async with self._socket() as ws:
+                    await self._login(ws)
+                    for i, kind in enumerate(("state_changed", *REGISTRY_EVENTS), 1):
+                        await ws.send(json.dumps({"id": i, "type": "subscribe_events", "event_type": kind}))
+                    publish({"type": "home", "reload": True})  # пока связи не было, события терялись
+                    delay, self.live_ok = 1.0, True
+                    log.info("живые состояния дома: подписка установлена, строк на вкладке: %d", len(self._index))
+
+                    async def reload_soon():
+                        await sleep(RELOAD_PAUSE)
+                        await self.overview()
+                        publish({"type": "home", "reload": True})
+
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        if msg.get("type") != "event":
+                            continue
+                        event = msg.get("event") or {}
+                        if event.get("event_type") != "state_changed":
+                            if pending is None or pending.done():
+                                pending = asyncio.create_task(reload_soon())
+                            continue
+                        data = event.get("data") or {}
+                        known, new = self._index.get(data.get("entity_id")), data.get("new_state")
+                        if known is None:
+                            continue  # то, чего на вкладке нет: сотни служебных датчиков
+                        made = item(new, *known) if new else None
+                        publish({"type": "home", "item": made} if made else {"type": "home", "reload": True})
+            except asyncio.CancelledError:
+                raise
+            except (PanelError, OSError, TimeoutError, websockets.WebSocketException, ValueError, KeyError) as e:
+                log.warning("живые состояния дома: связь потеряна (%s), повтор через %.0f с", e, delay)
+            finally:
+                self.live_ok = False
+                if pending is not None:
+                    pending.cancel()
+            await sleep(delay)
+            delay = min(delay * 2, 30.0)
 
     async def reload(self, entry_id: str) -> dict:
         """Опросить службу производителя заново: так появляются устройства, добавленные в её приложении."""

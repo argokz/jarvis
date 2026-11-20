@@ -104,5 +104,16 @@ class Settings:
     music_source: str = field(default_factory=lambda: os.getenv("JARVIS_MUSIC_SOURCE", "").strip().lower())
     yandex_music_token: str = field(default_factory=lambda: os.getenv("YANDEX_MUSIC_TOKEN", "").strip())
     station_entity: str = field(default_factory=lambda: os.getenv("JARVIS_STATION_ENTITY", "").strip())
+    # Живые состояния на вкладке «Дом»: ядро держит подписку на изменения в Home Assistant
+    home_live: bool = field(default_factory=lambda: os.getenv("JARVIS_HOME_LIVE", "1").strip().lower()
+                            in ("1", "true", "yes", "on"))
+    # Сторож: раз в столько минут опрашивать серверы речи и Home Assistant и сообщать о поломке (0 — не опрашивать)
+    watch_min: float = field(default_factory=lambda: float(os.getenv("JARVIS_WATCH_MIN", "5") or 0))
+    # Резервная копия vault и базы: папка (пусто — не делать), сколько архивов хранить, раз во сколько часов
+    backup_dir: Path | None = field(default_factory=lambda: (
+        Path(os.getenv("JARVIS_BACKUP_DIR", "").strip()).expanduser().resolve()
+        if os.getenv("JARVIS_BACKUP_DIR", "").strip() else None))
+    backup_keep: int = field(default_factory=lambda: int(os.getenv("JARVIS_BACKUP_KEEP", "14") or 14))
+    backup_hours: float = field(default_factory=lambda: float(os.getenv("JARVIS_BACKUP_HOURS", "24") or 24))
     # Папки на ПК, где агенту разрешено искать и открывать файлы (пусто = выключено)
     open_roots: tuple[Path, ...] = field(default_factory=lambda: _paths(os.getenv("JARVIS_OPEN_ROOTS", "")))

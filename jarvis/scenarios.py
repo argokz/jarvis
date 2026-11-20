@@ -622,8 +622,11 @@ class Scenarios:
             await self.notifier.send(" ".join(unheard), title=f"Сценарий «{sc.id}»")
 
     # --- изменение --------------------------------------------------------------------------
-    async def save(self, args: dict, channel: str = "") -> str:
-        """Создать или заменить сценарий — после проверки шагов и подтверждения пользователя."""
+    async def save(self, args: dict, channel: str = "", by_owner: bool = False) -> str:
+        """Создать или заменить сценарий — после проверки шагов и подтверждения пользователя.
+
+        by_owner — владелец сам собрал сценарий в приложении: спрашивать у него же подтверждение незачем.
+        """
         name = " ".join(str(args.get("name") or "").split())
         if not NAME.fullmatch(name):
             raise ScenarioError("name: короткое название из букв, цифр, пробелов и дефисов")
@@ -645,16 +648,39 @@ class Scenarios:
                 raise ScenarioError("в сценарии есть шаги умного дома, а Home Assistant не подключён или недоступен")
             if not any(t["name"] == step.args["tool"] or t["name"].endswith("__" + step.args["tool"]) for t in ctx[0]):
                 raise ScenarioError(f"в Home Assistant нет инструмента {step.args['tool']}")
-        if self.confirm is None:
-            raise ScenarioError("сценарий сохраняется только с подтверждения пользователя, а оно не настроено")
-        title = f"Изменить сценарий «{old.id}»?" if old else f"Создать сценарий «{name}»?"
-        if not await self.confirm.ask(title, describe(sc), channel=channel):
-            raise ScenarioError("пользователь не подтвердил сценарий")
+        if not by_owner:
+            if self.confirm is None:
+                raise ScenarioError("сценарий сохраняется только с подтверждения пользователя, а оно не настроено")
+            title = f"Изменить сценарий «{old.id}»?" if old else f"Создать сценарий «{name}»?"
+            if not await self.confirm.ask(title, describe(sc), channel=channel):
+                raise ScenarioError("пользователь не подтвердил сценарий")
         path = self.vault / (old.file if old else f"{DIR}/{name}.md")
         body = frontmatter.load(path).content if old else f"# {name}\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(frontmatter.dumps(frontmatter.Post(body, **meta)) + "\n", encoding="utf-8")
         return f"Сценарий «{old.id if old else name}» сохранён: {path.relative_to(self.vault).as_posix()}"
+
+    def set_phrases(self, name: str, phrases: list, without_name: bool | None = None) -> Scenario:
+        """Заменить фразы запуска (и нужно ли обращение по имени). Шаги, расписание и текст заметки не трогаются."""
+        sc = next((s for s in self.load() if s.id == name), None)
+        if sc is None:
+            raise ScenarioError(f"нет сценария «{name}»")
+        path = self.vault / sc.file
+        post = frontmatter.load(path)
+        meta = dict(post.metadata)
+        meta["phrases"] = phrases
+        if without_name is not None:
+            meta["without_name"] = bool(without_name)
+        if not phrases:
+            meta.pop("phrases")
+        new = parse(sc.id, meta)  # те же проверки, что при чтении: длина, число фраз, «без имени» от двух слов
+        if not new.phrases and not new.times:
+            raise ScenarioError("у сценария без расписания должна остаться хотя бы одна фраза")
+        for other in self.load():
+            if other.id != sc.id and other.enabled and not other.error and other.keys & new.keys:
+                raise ScenarioError(f"такая фраза уже есть у сценария «{other.id}»")
+        path.write_text(frontmatter.dumps(frontmatter.Post(post.content, **meta)) + "\n", encoding="utf-8")
+        return next(s for s in self.load() if s.id == name)
 
     def set_enabled(self, name: str, enabled: bool) -> Scenario:
         """Включить или выключить: правится одна строка frontmatter, остальное в заметке не трогается."""

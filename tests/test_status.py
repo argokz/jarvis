@@ -146,3 +146,56 @@ def test_token_from_websocket_address_never_reaches_the_log(core):
     assert api.HideToken().filter(record)
     assert record.getMessage() == '1.2.3.4:0 - "WebSocket /events/ws?token=***&x=1" [accepted]'
     assert any(isinstance(f, api.HideToken) for f in logging.getLogger("uvicorn.error").filters)
+
+
+class Said:
+    available = True
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, text, title="Jarvis", priority=3):
+        self.sent.append(text)
+
+
+async def test_watch_reports_a_failure_on_the_second_miss_and_the_recovery(tmp_path):
+    from jarvis.events import EventBus
+    from jarvis.status import Watch
+
+    alive = ["stt.test", "tts.test"]
+    st = make(tmp_path, alive=alive)
+    said, bus = Said(), EventBus()
+    seen = bus.subscribe()
+    watch = Watch(st, said, bus)
+    assert await watch.check() == []
+    alive.remove("tts.test")
+    assert await watch.check() == []                 # перезапуск службы на полминуты — не поломка
+    got = await watch.check()
+    assert len(got) == 1 and got[0].startswith("⚠️ Голос: Не отвечает синтез речи") and "jarvis-tts" in got[0]
+    assert await watch.check() == []                 # об одной поломке — один раз
+    alive.append("tts.test")
+    assert await watch.check() == ["✅ Голос: снова работает."]
+    assert said.sent == [got[0], "✅ Голос: снова работает."]
+    assert seen.get_nowait() == {"type": "health", "text": got[0]}   # приложение покажет и без Telegram
+
+
+def test_watch_is_quiet_about_a_short_blip_and_about_what_is_not_set_up(tmp_path):
+    from jarvis.status import Watch
+
+    alive = ["stt.test", "tts.test"]
+    watch = Watch(make(tmp_path, alive=alive), Said())
+    alive.clear()
+    assert asyncio.run(watch.check()) == []
+    alive.extend(["stt.test", "tts.test"])
+    assert asyncio.run(watch.check()) == [] and watch.fails == {}   # умный дом «не настроен» — не поломка
+
+
+def test_backup_state_is_part_of_the_report(tmp_path):
+    from jarvis.backup import Backup
+
+    st = make(tmp_path)
+    assert by_id(asyncio.run(st.collect()))["backup"]["state"] == "off"
+    st.backup = Backup(tmp_path / "vault", tmp_path / "j.db", tmp_path / "copies")
+    st.backup.make()
+    f = by_id(asyncio.run(st.collect()))["backup"]
+    assert f["state"] == "ready" and "Копий: 1" in f["note"]
