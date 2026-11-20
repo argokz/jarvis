@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { channelName, kindName, shortPath, time, toolName } from "../lib/format";
-import { refreshAll, resolveConfirmation, state } from "../lib/state";
+import { refreshAll, resolveConfirmation, scheduleAction, state } from "../lib/state";
 
-const feed = computed(() => state.journal.filter((j) => j.kind !== "user" && j.kind !== "assistant"));
+// реплики — в чате; результаты инструментов нужны модели, а не ленте
+const feed = computed(() => state.journal.filter((j) => !["user", "assistant", "tool_result"].includes(j.kind)));
 const icon = (k: string) =>
   ({ tool: "🔧", denied: "⛔", error: "❗", confirm_asked: "❓", confirm_resolved: "✔️" })[k] ?? "•";
 
@@ -24,6 +25,7 @@ function summary(j: { kind: string; name: string; text: string }): string {
   }
   return j.text;
 }
+const kindIcon = (k: string) => ({ timer: "⏱️", reminder: "📌", alarm: "⏰" })[k] ?? "•";
 const left = (exp: number) => Math.max(0, Math.round((exp * 1000 - Date.now()) / 60000));
 </script>
 
@@ -39,6 +41,19 @@ const left = (exp: number) => Math.max(0, Math.round((exp * 1000 - Date.now()) /
           <button class="primary" @click="resolveConfirmation(c.id, true)">Подтвердить</button>
           <button class="danger" @click="resolveConfirmation(c.id, false)">Отклонить</button>
         </div>
+      </div>
+    </section>
+
+    <section v-if="state.schedule.length" class="planned">
+      <h3>Запланировано</h3>
+      <div v-for="s in state.schedule" :key="s.id" class="row">
+        <span class="ic">{{ kindIcon(s.kind) }}</span>
+        <div class="body">
+          <div><b>{{ s.title }}</b></div>
+          <div class="small muted">{{ s.state === "ringing" ? "звенит сейчас" : time(s.due) }}</div>
+        </div>
+        <button v-if="s.state === 'ringing'" class="small primary" @click="scheduleAction(s.id, 'stop')">Стоп</button>
+        <button v-else class="small danger" @click="scheduleAction(s.id, 'cancel')">Отменить</button>
       </div>
     </section>
 
@@ -78,7 +93,9 @@ h3 { margin: 6px 0; font-size: 15px; }
 }
 .actions { display: flex; gap: 8px; margin-top: 10px; }
 .row { display: flex; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--line); }
-.row .body { min-width: 0; overflow-wrap: anywhere; }
+.row .body { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.planned { margin-bottom: 10px; }
+.planned .row { align-items: center; }
 .row.denied b, .row.error b { color: var(--danger); }
 .ic { width: 20px; text-align: center; }
 </style>

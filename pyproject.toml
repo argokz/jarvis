@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "python-frontmatter>=1.3.0",
     "uvicorn[standard]>=0.54.0",
+    "yandex-music>=3.2.2",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,24 @@ voice = [
     "sounddevice>=0.5.6",
     "websockets>=17.4",
 ]
+# Своё распознавание речи: GigaAM через ONNX, на процессоре (python -m jarvis.stt_server)
+stt = [
+    "onnx-asr[cpu,hub]>=0.12.0",
+]
+# Свой синтез речи: Silero на процессоре (python -m jarvis.tts_server)
+tts = [
+    "silero>=0.5.5",
+    "torch>=2.15.0",
+]
+
+# PyTorch для Silero — сборка без CUDA: 210 МБ вместо нескольких гигабайт
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [dependency-groups]
 dev = [

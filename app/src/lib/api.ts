@@ -24,6 +24,106 @@ export interface Confirmation {
   created: number;
   expires: number;
 }
+/** Таймер, напоминание или будильник из планировщика ядра. */
+export interface Scheduled {
+  id: number;
+  kind: "timer" | "reminder" | "alarm";
+  text: string;
+  title: string;
+  due: number;
+  repeat: string;
+  state: "pending" | "ringing";
+}
+/** Сценарий из vault: фраза или время запускают цепочку шагов. */
+export interface Scenario {
+  id: string;
+  phrases: string[];
+  schedule: string;
+  enabled: boolean;
+  without_name: boolean;
+  steps: string[];
+  error: string;
+  file: string;
+}
+/** Фраза для пробы: fast отвечает быстрая модель (как голосу), agent — агент. */
+export interface Try {
+  text: string;
+  via: "fast" | "agent";
+  effect: string;
+}
+export interface Feature {
+  id: string;
+  title: string;
+  state: "ready" | "setup" | "off" | "down";
+  note: string;
+  hint: string;
+  tries: Try[];
+}
+export interface StatusReport {
+  name: string;
+  wake: string[];
+  mics: number;
+  spent_today: { usd: number; turns: number }; // агент и быстрая модель вместе
+  features: Feature[];
+}
+export interface SpeechCheck {
+  ok: boolean;
+  said: string;
+  heard: string;
+  tts_s: number | null;
+  stt_s: number | null;
+  error: string;
+}
+/** Строка вкладки «Дом»: устройство или датчик из Home Assistant. */
+export interface HomeItem {
+  entity_id: string;
+  domain: string;
+  kind: string;
+  name: string;
+  device: string;
+  area: string;
+  control: boolean;
+  available: boolean;
+  exposed: boolean; // открыто голосовому ассистенту
+  secondary: boolean; // настройка или диагностика устройства
+  state: string;
+  on: boolean | null;
+  unit: string;
+  brightness?: number;
+  dimmable?: boolean;
+  volume?: number;
+  temperature?: number | null;
+  current?: number | null;
+  position?: number;
+}
+export interface HomeOverview {
+  url: string;
+  areas: string[];
+  items: HomeItem[];
+  integrations: { entry_id: string; domain: string; title: string; state: string; devices: number }[];
+  discovered: { flow_id: string; handler: string; title: string }[];
+}
+export type HomeAction = "on" | "off" | "toggle" | "brightness" | "volume" | "temperature" | "position" | "play_pause";
+export interface FlowField {
+  name: string;
+  label: string;
+  kind: "text" | "password" | "number" | "boolean" | "select";
+  required: boolean;
+  default: unknown;
+  options: { value: unknown; label: string }[];
+}
+/** Шаг мастера добавления устройства в Home Assistant. */
+export interface FlowStep {
+  flow_id: string;
+  handler: string;
+  type: string;
+  title: string;
+  text: string;
+  errors: string[];
+  url: string;
+  fields: FlowField[];
+  choices: { value: string; label: string }[];
+}
 export type Project = Record<string, unknown> & {
   id: string;
   status: string;
@@ -78,7 +178,38 @@ export class Api {
       method: "POST",
       body: JSON.stringify({ approve }),
     });
+  schedule = () => this.req<Scheduled[]>("/schedule");
+  scheduleStop = (id: number) => this.req<{ ok: boolean }>(`/schedule/${id}/stop`, { method: "POST" });
+  scheduleSnooze = (id: number, minutes = 10) =>
+    this.req<{ ok: boolean }>(`/schedule/${id}/snooze`, { method: "POST", body: JSON.stringify({ minutes }) });
+  scheduleCancel = (id: number) => this.req<{ ok: boolean }>(`/schedule/${id}`, { method: "DELETE" });
+  scenarios = () => this.req<Scenario[]>("/scenarios");
+  scenarioRun = (id: string) =>
+    this.req<{ ok: boolean; text: string }>(`/scenarios/${encodeURIComponent(id)}/run`, { method: "POST" });
+  scenarioEnable = (id: string, enabled: boolean) =>
+    this.req<Scenario>(`/scenarios/${encodeURIComponent(id)}/enabled`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
   chat = (text: string) =>
     this.req<ChatReply>("/chat", { method: "POST", body: JSON.stringify({ text, channel: "app" }) });
+  status = () => this.req<StatusReport>("/status");
+  speechCheck = () => this.req<SpeechCheck>("/status/speech", { method: "POST" });
+  home = () => this.req<HomeOverview>("/home");
+  homeAct = (id: string, action: HomeAction, value?: number) =>
+    this.req<{ ok: boolean }>(`/home/entity/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ action, value: value ?? null }),
+    });
+  homeExpose = (id: string, exposed: boolean) =>
+    this.req<{ ok: boolean }>(`/home/entity/${encodeURIComponent(id)}/expose`, {
+      method: "POST",
+      body: JSON.stringify({ exposed }),
+    });
+  homeReload = (entry: string) =>
+    this.req<{ ok: boolean }>(`/home/integrations/${encodeURIComponent(entry)}/reload`, { method: "POST" });
+  homeFlow = (id: string) => this.req<FlowStep>(`/home/flows/${encodeURIComponent(id)}`);
+  homeFlowAnswer = (id: string, data: Record<string, unknown>) =>
+    this.req<FlowStep>(`/home/flows/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ data }) });
   newSession = () => this.req<{ ok: boolean }>("/session/new", { method: "POST" });
 }

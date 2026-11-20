@@ -30,7 +30,8 @@ def chunks(text: str, limit: int = LIMIT):
         text = text[cut:].lstrip("\n")
 
 
-def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) -> tuple[Bot, Dispatcher]:
+def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None, scheduler=None,
+          scenarios=None) -> tuple[Bot, Dispatcher]:
     bot = Bot(settings.telegram_token)
     dp = Dispatcher()
 
@@ -39,8 +40,10 @@ def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) ->
 
     async def answer(m: Message, text: str) -> None:
         async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
-            reply = await brain.ask(OWNER, text, channel="telegram")
-        for part in chunks(reply.text):
+            # фраза сценария выполняется сразу, без модели
+            scene = await scenarios.handle(OWNER, text, "telegram") if scenarios else None
+            reply = scene if scene is not None else (await brain.ask(OWNER, text, channel="telegram")).text
+        for part in chunks(reply):
             await m.answer(part)
 
     @dp.callback_query(F.data.startswith("cf:"))
@@ -54,6 +57,21 @@ def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) ->
             mark = ("✅ Подтверждено" if verdict == "y" else "❌ Отклонено") if ok else "⌛ Неактуально"
             await q.message.edit_text(f"{q.message.text}\n\n{mark}")
 
+    @dp.callback_query(F.data.startswith("al:"))
+    async def on_alert(q: CallbackQuery):
+        if not q.from_user or q.from_user.id not in settings.telegram_allowed or scheduler is None:
+            return await q.answer("Нет доступа")
+        _, raw_id, verdict = q.data.split(":", 2)
+        if not raw_id.isdigit():
+            return await q.answer("Уже неактуально")
+        if verdict == "s":
+            ok, mark = await scheduler.stop(int(raw_id), by="telegram"), "⏹ Выключено"
+        else:
+            ok, mark = await scheduler.snooze(int(raw_id), by="telegram"), "⏰ Отложено на 10 минут"
+        await q.answer("Принято" if ok else "Уже неактуально")
+        if q.message:
+            await q.message.edit_text(f"{q.message.text}\n\n{mark if ok else '⌛ Уже неактуально'}")
+
     @dp.message(~F.func(allowed))
     async def stranger(m: Message):
         uid = m.from_user.id if m.from_user else "?"
@@ -62,8 +80,8 @@ def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) ->
 
     @dp.message(Command("start", "help"))
     async def start(m: Message):
-        await m.answer("Джарвис на связи. Пишите или присылайте голосовые.\n"
-                       "/projects — реестр проектов\n/new — начать разговор заново")
+        await m.answer(f"{settings.assistant_name} на связи. Пишите или присылайте голосовые.\n"
+                       "/projects — реестр проектов\n/scenarios — сценарии\n/new — начать разговор заново")
 
     @dp.message(Command("new"))
     async def new(m: Message):
@@ -73,6 +91,11 @@ def build(settings: Settings, brain: Brain, speech: SpeechKit, confirms=None) ->
     @dp.message(Command("projects"))
     async def projects(m: Message):  # без модели: прямо из реестра
         await m.answer(registry.summary(registry.load_projects(settings.vault)))
+
+    @dp.message(Command("scenarios"))
+    async def scenario_list(m: Message):  # без модели: прямо из заметок
+        for part in chunks(scenarios.listing() if scenarios else "Сценарии не подключены."):
+            await m.answer(part)
 
     @dp.message(F.voice)
     async def voice(m: Message):

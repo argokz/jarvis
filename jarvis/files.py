@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -41,11 +42,21 @@ def find(query: str, roots: tuple[Path, ...], limit: int = 15, budget_s: float =
     return sorted(hits, key=mtime, reverse=True)[:limit]
 
 
-def open_path(path: Path) -> None:
-    """Открывает файл программой по умолчанию."""
+def open_command(target: str, env=os.environ, which=shutil.which) -> list[str]:
+    """Команда для Linux. Под systemd программу запускаем в отдельной области (scope): иначе она
+    остаётся в группе процессов ядра и закрывается вместе с ним при перезапуске сервиса. Именно
+    scope, а не сервис: xdg-open выходит сразу, и сервис systemd убил бы запущенную им программу."""
+    cmd = ["xdg-open", target]
+    if env.get("INVOCATION_ID") and which("systemd-run"):
+        return ["systemd-run", "--user", "--scope", "--quiet", "--", *cmd]
+    return cmd
+
+
+def open_path(path: Path | str) -> None:
+    """Открывает файл (или адрес сайта) программой по умолчанию."""
     if sys.platform == "win32":
         os.startfile(path)  # type: ignore[attr-defined]
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
     else:
-        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(open_command(str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

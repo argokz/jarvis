@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import { channelName, time } from "../lib/format";
-import { pttStart, pttStop, sendText, state, stopSpeaking } from "../lib/state";
+import { askFast, pttStart, pttStop, sendText, setFast, state, stopSpeaking } from "../lib/state";
 
 const draft = ref("");
 const list = ref<HTMLElement>();
@@ -12,7 +12,7 @@ async function submit() {
   const text = draft.value.trim();
   if (!text || state.sending) return;
   draft.value = "";
-  await sendText(text);
+  await (state.fast ? askFast(text) : sendText(text));
 }
 
 function scrollDown() {
@@ -66,7 +66,7 @@ const micLabel: Record<string, string> = {
       </div>
       <div v-if="state.voice.phase !== 'idle' && (state.voice.transcript || state.voice.phrases.length)" class="live">
         <div v-if="state.voice.transcript" class="msg user">
-          <div class="bubble">🎙 {{ state.voice.transcript }}</div>
+          <div class="bubble">{{ state.voice.transcript }}</div>
         </div>
         <div v-if="state.voice.phrases.length" class="msg assistant">
           <div class="bubble">{{ state.voice.phrases.join(" ") }}</div>
@@ -83,6 +83,16 @@ const micLabel: Record<string, string> = {
         placeholder="Сообщение…"
         @keydown.enter.exact.prevent="submit"
       ></textarea>
+      <button
+        type="button"
+        class="fast"
+        :class="{ on: state.fast }"
+        :aria-pressed="state.fast"
+        :title="state.fast ? 'Отвечает быстрая модель и вслух; сложное передаст агенту' : 'Отвечает агент; нажмите — быстрый режим'"
+        @click="setFast(!state.fast)"
+      >
+        ⚡
+      </button>
       <button class="primary" type="submit" :disabled="!draft.trim() || state.sending" aria-label="Отправить">➤</button>
       <button
         type="button"
@@ -98,7 +108,9 @@ const micLabel: Record<string, string> = {
         {{ state.voice.phase === "speaking" ? "■" : "🎙" }}
       </button>
     </form>
-    <div class="hint small muted">{{ micLabel[state.voice.phase] }}</div>
+    <div class="hint small muted">
+      {{ state.voice.phase === "idle" && state.fast ? "⚡ Быстрый режим: ответ вслух, доли цента" : micLabel[state.voice.phase] }}
+    </div>
   </div>
 </template>
 
@@ -130,6 +142,8 @@ const micLabel: Record<string, string> = {
 .composer textarea { resize: none; max-height: 140px; }
 .composer button { height: 44px; min-width: 44px; padding: 0 12px; }
 .mic { font-size: 18px; touch-action: none; user-select: none; }
+.fast { opacity: .55; }
+.fast.on { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .mic.recording { background: var(--danger); border-color: var(--danger); color: #fff; animation: pulse 1s infinite; }
 .mic.thinking { opacity: .7; }
 .mic.speaking { background: var(--accent); border-color: var(--accent); color: #fff; }

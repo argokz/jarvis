@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { defaultServer, wsUrl } from "./config";
-import { shortPath } from "./format";
+import type { HomeItem } from "./api";
+import { Desktop } from "./desktop";
+import { groupHome, shortName, stateText } from "./home";
+import { seconds, shortPath, usd } from "./format";
 import { mergeMessages } from "./messages";
 import { concat, downsampleToInt16, int16ToFloat32 } from "./pcm";
 import { VoiceClient } from "./voice";
@@ -109,5 +112,67 @@ describe("format", () => {
     expect(shortPath("/tmp/x/vault/10_Projects/demo.md")).toBe("10_Projects/demo.md");
     expect(shortPath("D:\\Docs\\finance\\Бюджет.xlsx")).toBe("…/finance/Бюджет.xlsx");
     expect(shortPath("a/b")).toBe("a/b");
+  });
+});
+
+describe("desktop shell bridge", () => {
+  it("is absent in a browser: calls return empty values instead of failing", async () => {
+    const d = new Desktop({});
+    expect(d.present).toBe(false);
+    expect(await d.localConn()).toBeNull();
+    expect(await d.services()).toEqual([]);
+    expect(await d.autostart()).toBeNull();
+    expect(await d.serviceAction("jarvis-core", "restart")).toEqual([]);
+  });
+  it("passes commands to the shell and survives commands a platform lacks", async () => {
+    const calls: unknown[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push([cmd, args]);
+      if (cmd === "local_conn") return { server: "http://127.0.0.1:8010", token: "t" };
+      if (cmd === "service_action") throw "Unit jarvis-x.service not found";
+      throw new Error("unknown command");
+    };
+    const d = new Desktop({ __TAURI__: { core: { invoke } } });
+    expect(d.present).toBe(true);
+    expect(await d.localConn()).toEqual({ server: "http://127.0.0.1:8010", token: "t" });
+    expect(await d.autostart()).toBeNull(); // на телефоне автозапуска нет — блок просто не показываем
+    await d.setAutostart(true);
+    expect(calls[calls.length - 1]).toEqual(["plugin:autostart|enable", undefined]);
+    await expect(d.serviceAction("jarvis-x", "start")).rejects.toThrow("not found");
+  });
+});
+
+describe("format", () => {
+  it("names small sums in words and prints seconds the Russian way", () => {
+    expect([usd(0), usd(0.004), usd(0.0721)]).toEqual(["$0", "меньше цента", "$0.07"]);
+    expect([seconds(0.13), seconds(null)]).toEqual(["0,13 с", "—"]);
+  });
+});
+
+describe("home tab layout", () => {
+  const row = (over: Partial<HomeItem>): HomeItem => ({
+    entity_id: "switch.x", domain: "switch", kind: "", name: "Свет", device: "", area: "Зал", control: true,
+    available: true, exposed: false, secondary: false, state: "on", on: true, unit: "", ...over,
+  });
+  it("groups rows by room and device, folds big devices, hides device settings until asked", () => {
+    const grill = (n: number, secondary = false) =>
+      row({ entity_id: `switch.g${n}`, name: `Гриль Режим ${n}`, device: "Гриль", area: "Кухня", secondary });
+    const items = [row({}), row({ entity_id: "light.l", name: "Лампа" }), grill(1), grill(2), grill(3), grill(4), grill(5, true)];
+    const rooms = groupHome(items, false);
+    expect(rooms.map((r) => r.name)).toEqual(["Зал", "Кухня"]);
+    expect(rooms[0].groups.map((g) => g.items.length)).toEqual([1, 1]); // без устройства — каждая строка сама по себе
+    expect(rooms[1].groups).toHaveLength(1);
+    expect([rooms[1].groups[0].items.length, rooms[1].groups[0].fold]).toEqual([4, true]);
+    expect(groupHome(items, true)[1].groups[0].items).toHaveLength(5);
+  });
+  it("drops the device name repeated in a row and describes the state", () => {
+    expect(shortName(row({ name: "Гриль Подогрев", device: "Гриль" }), true)).toBe("Подогрев");
+    expect(shortName(row({ name: "Гриль Подогрев", device: "Гриль" }), false)).toBe("Гриль Подогрев");
+    expect(shortName(row({ name: "Гриль", device: "Гриль" }), true)).toBe("Гриль");
+    expect(stateText(row({ on: true, brightness: 40 }))).toBe("включено · яркость 40%");
+    expect(stateText(row({ on: false, brightness: 40 }))).toBe("выключено");
+    expect(stateText(row({ control: false, on: null, state: "21.5", unit: "°C" }))).toBe("21.5 °C");
+    expect(stateText(row({ available: false }))).toBe("недоступно");
+    expect(stateText(row({ domain: "button", on: null, state: "" }))).toBe("");
   });
 });

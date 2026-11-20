@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
 import { Api } from "../lib/api";
-import { newSession, state, updateConn } from "../lib/state";
+import { desktop } from "../lib/desktop";
+import { adoptLocal, connect, newSession, state, updateConn } from "../lib/state";
 
 const emit = defineEmits<{ saved: [] }>();
 const form = reactive({ ...state.conn });
@@ -25,6 +26,17 @@ async function save() {
   }
 }
 
+async function local() {
+  if (await adoptLocal(true)) {
+    Object.assign(form, state.conn);
+    connect();
+    check.value = "✅ Адрес и токен взяты из .env этого компьютера.";
+    emit("saved");
+  } else {
+    check.value = "❌ Не нашёл настройки на этом компьютере: нужен файл ~/.config/jarvis/env — ссылка на .env ядра.";
+  }
+}
+
 async function reset() {
   await newSession();
   check.value = "Начат новый разговор. Память в vault сохранена.";
@@ -43,6 +55,7 @@ async function reset() {
         <input v-model="form.token" type="password" autocomplete="current-password" />
       </label>
       <button class="primary" :disabled="busy || !form.server || !form.token">Сохранить и подключиться</button>
+      <button v-if="desktop.present" type="button" :disabled="busy" @click="local">Взять настройки с этого компьютера</button>
       <div v-if="check" class="small">{{ check }}</div>
     </form>
 
