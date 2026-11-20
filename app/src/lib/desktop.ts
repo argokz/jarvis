@@ -16,7 +16,10 @@ export interface Service {
 export type ServiceAction = "start" | "stop" | "restart" | "enable" | "disable";
 
 type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-type Host = { __TAURI__?: { core?: { invoke?: Invoke } } };
+type Host = {
+  __TAURI__?: { core?: { invoke?: Invoke } };
+  __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } };
+};
 
 const invoker = (host: Host): Invoke | undefined => host.__TAURI__?.core?.invoke;
 
@@ -25,6 +28,11 @@ export class Desktop {
 
   get present(): boolean {
     return !!invoker(this.host);
+  }
+
+  /** Имя окна оболочки: "main" или "quick"; в браузере — пусто. */
+  get windowLabel(): string {
+    return this.host.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "";
   }
 
   private async call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: T): Promise<T> {
@@ -41,6 +49,9 @@ export class Desktop {
   localConn = () => this.call<Conn | null>("local_conn", undefined, null);
   services = () => this.call<Service[]>("services", undefined, []);
   showWindow = () => this.call<null>("show_window", undefined, null);
+  /** Показать главное окно (из быстрого окна) и спрятать быстрое. */
+  openMain = () => this.call<null>("open_main", undefined, null);
+  hideQuick = () => this.call<null>("hide_quick", undefined, null);
 
   /** Открыть ссылку в браузере системы: из окна Tauri обычная ссылка никуда не ведёт. */
   async open(url: string): Promise<void> {

@@ -3,6 +3,6 @@
   "identifier": "desktop",
   "description": "На ПК окно само включает и выключает свой автозапуск",
   "platforms": ["linux", "macOS", "windows"],
-  "windows": ["main"],
+  "windows": ["main", "quick"],
   "permissions": ["autostart:allow-enable", "autostart:allow-disable", "autostart:allow-is-enabled"]
 }

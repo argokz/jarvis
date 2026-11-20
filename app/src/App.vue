@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import ChatView from "./components/ChatView.vue";
+import DeviceSheet from "./components/DeviceSheet.vue";
 import FeaturesView from "./components/FeaturesView.vue";
 import HomeView from "./components/HomeView.vue";
 import ProjectsView from "./components/ProjectsView.vue";
+import QuickView from "./components/QuickView.vue";
 import ScenariosView from "./components/ScenariosView.vue";
 import SettingsView from "./components/SettingsView.vue";
 import TasksView from "./components/TasksView.vue";
+import { desktop } from "./lib/desktop";
 import { adoptLocal, connect, scheduleAction, state, type Tab } from "./lib/state";
 
 const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -21,6 +24,9 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
 const statusText = computed(
   () => ({ online: "на связи", connecting: "подключаюсь…", offline: "нет связи" })[state.status],
 );
+// быстрое окно из трея — та же страница с меткой #quick: только «сейчас», сценарии и строка вопроса
+const quick = desktop.windowLabel === "quick" || (typeof location !== "undefined" && location.hash === "#quick");
+const sheet = computed(() => state.home?.items.find((i) => i.entity_id === state.sheet) ?? null);
 const ringing = computed(() => state.schedule.filter((s) => s.state === "ringing"));
 onMounted(async () => {
   await adoptLocal(); // на ПК с ядром оболочка сама отдаёт адрес и токен
@@ -30,7 +36,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="shell">
+  <QuickView v-if="quick" />
+  <div v-else class="shell">
     <div class="body">
     <header class="top">
       <strong>Jarvis</strong>
@@ -71,6 +78,7 @@ onMounted(async () => {
       </button>
     </nav>
   </div>
+  <DeviceSheet v-if="sheet" :item="sheet" @close="state.sheet = ''" />
 </template>
 
 <style scoped>

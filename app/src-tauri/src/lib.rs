@@ -114,6 +114,47 @@ fn show_window(app: tauri::AppHandle) {
     }
 }
 
+/// Быстрое окно: маленькое, поверх остальных; та же страница с меткой #quick. Повторный вызов прячет его.
+#[cfg(desktop)]
+fn toggle_quick(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("quick") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+    let built = tauri::WebviewWindowBuilder::new(app, "quick", tauri::WebviewUrl::App("index.html#quick".into()))
+        .title("Jarvis — быстро")
+        .inner_size(420.0, 620.0)
+        .min_inner_size(340.0, 420.0)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .center()
+        .build();
+    if let Err(e) = built {
+        eprintln!("быстрое окно не открылось: {e}");
+    }
+}
+
+/// Из быстрого окна — в главное.
+#[tauri::command]
+fn open_main(app: tauri::AppHandle) {
+    if let Some(quick) = app.get_webview_window("quick") {
+        let _ = quick.hide();
+    }
+    reveal(&app);
+}
+
+#[tauri::command]
+fn hide_quick(app: tauri::AppHandle) {
+    if let Some(quick) = app.get_webview_window("quick") {
+        let _ = quick.hide();
+    }
+}
+
 /// Открыть ссылку в браузере системы: в окне Tauri ссылки наружу не ведут. Только http и https.
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -144,14 +185,16 @@ fn tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     let open = MenuItem::with_id(app, "open", "Открыть Jarvis", true, None::<&str>)?;
+    let quick = MenuItem::with_id(app, "quick", "Быстрое окно", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &quick, &quit])?;
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip("Jarvis")
         .menu(&menu)
         .show_menu_on_left_click(false) // левый щелчок открывает окно (в Linux значок умеет только меню)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => reveal(app),
+            "quick" => toggle_quick(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -173,8 +216,15 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
-            // второй запуск не открывает второе окно, а показывает первое — так работает и ярлык, и горячая клавиша
-            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| reveal(app)))
+            // второй запуск не открывает второе окно, а показывает первое — так работает и ярлык, и горячая клавиша;
+            // `jarvis-app --quick` показывает или прячет быстрое окно
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                if args.iter().any(|a| a == "--quick") {
+                    toggle_quick(app);
+                } else {
+                    reveal(app);
+                }
+            }))
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 Some(vec!["--hidden"]),
@@ -189,7 +239,9 @@ pub fn run() {
             });
     }
     builder
-        .invoke_handler(tauri::generate_handler![local_conn, services, service_action, show_window, open_external])
+        .invoke_handler(tauri::generate_handler![
+            local_conn, services, service_action, show_window, open_external, open_main, hide_quick
+        ])
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -209,7 +261,11 @@ pub fn run() {
                     }
                 }
                 // окно создаётся скрытым: при входе в систему (--hidden) оно остаётся в трее
-                if !(has_tray && args.iter().any(|a| a == "--hidden")) {
+                let quick = args.iter().any(|a| a == "--quick");
+                if quick {
+                    toggle_quick(app.handle());
+                }
+                if !(has_tray && (quick || args.iter().any(|a| a == "--hidden"))) {
                     reveal(app.handle());
                 }
             }
