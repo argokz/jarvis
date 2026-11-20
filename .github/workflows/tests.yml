@@ -1,0 +1,71 @@
+# Проверки на каждый pull request и на main: без них слияние идёт вслепую.
+# Ключи и внешние службы тестам не нужны: модели, Home Assistant и серверы речи подменены.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: ядро, Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ядро живёт на 3.15; голосовой клиент и серверы речи — на 3.13 (onnxruntime под 3.15 ещё нет)
+          - python: "3.15"
+            args: --ignore=tests/test_voice.py
+            extra: ""
+          - python: "3.13"
+            args: ""
+            extra: --extra voice
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Тесты
+        run: uv run --locked --python ${{ matrix.python }} ${{ matrix.extra }} pytest -q ${{ matrix.args }}
+
+  app:
+    name: клиент (Vue)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - name: Тесты библиотек клиента
+        run: npm test
+      - name: Типы и сборка
+        run: npm run build
+
+  shell:
+    name: оболочка (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      # модуль без зависимостей проверяется отдельно: сборка всего Tauri ради четырёх функций заняла бы минуты
+      - name: Тесты local.rs
+        run: |
+          rustc --edition 2021 --test app/src-tauri/src/local.rs -o "$RUNNER_TEMP/local-test"
+          "$RUNNER_TEMP/local-test"
