@@ -512,7 +512,8 @@ class Scenarios:
             tool = {"volume": "pc_volume", "media": "pc_media", "youtube": "pc_youtube", "open": "pc_open_url",
                     "notify": "pc_notify"}[kind]
             try:
-                await self.computer.call(tool, args)
+                # в сценарии «volume» — общая громкость компьютера, как и раньше
+                await self.computer.call(tool, {"target": "system", **args} if kind == "volume" else args)
             except pc.PCError as e:
                 raise ScenarioError(str(e)) from e
             return None

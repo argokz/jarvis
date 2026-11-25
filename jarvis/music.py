@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -181,10 +184,17 @@ class Yandex:
 
 # --- проигрыватель --------------------------------------------------------------------------
 
-async def ffplay(url: str, offset: float):
-    args = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", *(["-ss", f"{offset:.1f}"] if offset > 0 else [])]
+def gain(level: int) -> int:
+    """Проценты, как в микшере PipeWire (шкала кубическая), → линейная громкость ffplay 0–100."""
+    return 0 if level <= 0 else max(1, round(100 * (min(level, 100) / 100) ** 3))
+
+
+async def ffplay(url: str, offset: float, volume: int = 100):
+    args = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", *(["-ss", f"{offset:.1f}"] if offset > 0 else []),
+            *(["-volume", str(volume)] if volume < 100 else [])]
+    env = {**os.environ, "SDL_APP_NAME": "Jarvis — музыка"}  # так поток подписан в микшере
     try:
-        return await asyncio.create_subprocess_exec(*args, url, stdin=asyncio.subprocess.DEVNULL,
+        return await asyncio.create_subprocess_exec(*args, url, stdin=asyncio.subprocess.DEVNULL, env=env,
                                                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     except FileNotFoundError as e:
         raise MusicError("не найдена программа ffplay") from e
@@ -193,8 +203,16 @@ async def ffplay(url: str, offset: float):
 class Player:
     """Очередь треков и один процесс ffplay. state: stopped, playing или paused."""
 
-    def __init__(self, resolve, spawn=ffplay, clock=time.monotonic):
+    def __init__(self, resolve, spawn=ffplay, clock=time.monotonic, level_file: Path | None = None):
         self._resolve, self._spawn, self.clock = resolve, spawn, clock
+        # Своя громкость музыки, отдельно от общей: голос ассистента остаётся громче. Хранится в файле,
+        # потому что меняют её голосом, а в это время музыка стоит и её потока в микшере нет.
+        self.level, self.muted = 100, False
+        self._level_file = level_file
+        with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+            saved = json.loads(level_file.read_text()) if level_file else {}
+            self.level = max(0, min(100, int(saved.get("level", 100))))
+            self.muted = bool(saved.get("muted", False))
         self.queue: list[Track] = []
         self.index = 0
         self.state = "stopped"
@@ -263,7 +281,9 @@ class Player:
                     track.url = await self._resolve(track)
                 if gen != self._gen:
                     return
-                proc = await self._spawn(track.url, self.offset if track.duration else 0.0)
+                g = 0 if self.muted else gain(self.level)
+                proc = await self._spawn(track.url, self.offset if track.duration else 0.0,
+                                         **({"volume": g} if g < 100 else {}))
                 if gen != self._gen:  # пока запускался, всё поменялось
                     with contextlib.suppress(ProcessLookupError):
                         proc.kill()
@@ -337,6 +357,23 @@ class Player:
         return "Играет: " + self.current.label
 
     # --- тишина ради ассистента -------------------------------------------------------------
+    def set_level(self, level: int | None = None, muted: bool | None = None) -> None:
+        """Новая громкость музыки. Если музыка звучит прямо сейчас — перезапуск с того же места."""
+        if level is not None:
+            self.level = max(0, min(100, int(level)))
+        if muted is not None:
+            self.muted = muted
+        if self._level_file:
+            with contextlib.suppress(OSError):
+                self._level_file.parent.mkdir(parents=True, exist_ok=True)
+                self._level_file.write_text(json.dumps({"level": self.level, "muted": self.muted}))
+        if self.state == "playing" and not self._held and self._proc is not None:
+            self._keep_position()
+            self._launch()
+
+    def describe_level(self) -> str:
+        return f"{self.level}%" + (", без звука" if self.muted else "")
+
     def hold(self, limit: float = HOLD_MAX) -> None:
         """Замолчать, пока ассистент слушает и говорит. Включённое в это время заиграет после release()."""
         if self._hold_timer:
@@ -408,11 +445,11 @@ class Station:
 
 class Music:
     def __init__(self, sources=(), station: Station | None = None, default: str = "", spawn=ffplay,
-                 clock=time.monotonic):
+                 clock=time.monotonic, level_file: Path | None = None):
         self.sources = {s.name: s for s in sources if s.available}
         self.station = station if station is not None and station.available else None
         self.default = default if default in self.sources else next(iter(self.sources), "")
-        self.player = Player(self._resolve, spawn, clock)
+        self.player = Player(self._resolve, spawn, clock, level_file)
 
     @property
     def available(self) -> bool:

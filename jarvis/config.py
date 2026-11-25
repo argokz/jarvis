@@ -42,6 +42,8 @@ class Settings:
     hass_token: str = field(default_factory=lambda: os.getenv("HASS_TOKEN", ""))
     # /api/mcp/assist — только Assist (открытые сущности); /api/mcp — все API, включая вызов любых служб
     hass_mcp_path: str = field(default_factory=lambda: os.getenv("HASS_MCP_PATH", "/api/mcp/assist"))
+    # Пока ассистент слушает и говорит, звук браузеров и плееров — в столько раз тише (0 или 1 — не трогать)
+    media_duck: float = field(default_factory=lambda: float(os.getenv("JARVIS_MEDIA_DUCK", "0.3") or 0))
     # Notion: токен внутренней интеграции и страница, под которой создавать новые
     notion_token: str = field(default_factory=lambda: os.getenv("NOTION_TOKEN", ""))
     notion_parent: str = field(default_factory=lambda: os.getenv("NOTION_PARENT_PAGE", ""))

@@ -67,7 +67,8 @@ home = Home(settings.hass_url, settings.hass_token, settings.hass_mcp_path)
 tunes = music.Music(
     sources=[music.YouTube(), music.Yandex(settings.yandex_music_token)] if settings.pc_control else [],
     station=music.Station(settings.hass_url, settings.hass_token, settings.station_entity),
-    default=settings.music_source or ("yandex" if settings.yandex_music_token else "youtube"))
+    default=settings.music_source or ("yandex" if settings.yandex_music_token else "youtube"),
+    level_file=settings.db.parent / "music_volume.json")
 computer = pc.PC(player=tunes.player) if settings.pc_control else None
 scenarios = Scenarios(settings.vault, store, home=home, computer=computer, scheduler=scheduler, brain=brain,
                       notifier=notifier, confirm=confirms, tunes=tunes)
@@ -76,7 +77,7 @@ brain.scenes, brain.computer, brain.tunes = scenarios, computer, tunes
 router = VoiceRouter(settings, brain, store, notifier, home=home, computer=computer, scheduler=scheduler,
                      scenes=scenarios, tunes=tunes)
 voice = VoiceService(router, speech, scheduler, WakeWords(wake.parse(settings.wake_words)), scenarios,
-                     player=tunes.player if tunes.sources else None)
+                     player=tunes.player if tunes.sources else None, computer=computer, duck=settings.media_duck)
 scenarios.announce = voice.announce
 scheduler.sinks.append(voice.on_alert)
 scheduler.has_voice = lambda: bool(voice.sessions)

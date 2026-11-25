@@ -43,6 +43,7 @@ import re
 
 from fastapi import WebSocket
 
+from .music import HOLD_MAX
 from .router import VoiceRouter
 from .schedule import STT_HINT, ScheduleError
 from .speech import MAX_STT_BYTES, SpeechError, SpeechKit
@@ -98,10 +99,13 @@ def clean(text: str) -> str:
 
 class VoiceService:
     def __init__(self, router: VoiceRouter, speech: SpeechKit, scheduler=None, wake: WakeWords | None = None,
-                 scenarios=None, player=None):
+                 scenarios=None, player=None, computer=None, duck: float = 0.0):
         self.router, self.speech, self.scheduler, self.scenarios = router, speech, scheduler, scenarios
         self.player = player  # music.Player или None: музыка, которую надо заглушать на время разговора
+        # pc.PC и во сколько раз приглушать браузеры и плееры (видео), пока ассистент слушает и говорит
+        self.computer, self.duck = (computer, duck) if computer is not None and 0 < duck < 1 else (None, 0.0)
         self._release: asyncio.TimerHandle | None = None
+        self._unduck_guard: asyncio.TimerHandle | None = None
         # Обращение ищется в тексте каждой услышанной фразы — только когда распознавание своё.
         self.wake = wake if wake and speech.enabled and getattr(speech, "local", False) else None
         self.sessions: set[VoiceSession] = set()  # подписанные клиенты: сами звенят и говорят
@@ -149,19 +153,41 @@ class VoiceService:
         return True
 
     def _hush_music(self, limit: float | None = None) -> None:
-        if self.player is None:
+        if self.player is None and self.computer is None:
             return
         if self._release:
             self._release.cancel()
             self._release = None
-        self.player.hold(*([limit] if limit else []))
+        if self.player is not None:
+            self.player.hold(*([limit] if limit else []))
+        if self.computer is not None:
+            self._job(self.computer.duck(self.duck))
+            if self._unduck_guard:
+                self._unduck_guard.cancel()
+            # как и у музыки: если о разговоре забыли, звук вернётся сам
+            self._unduck_guard = asyncio.get_running_loop().call_later(
+                limit or HOLD_MAX, lambda: self._job(self.computer.unduck()))
 
     def _resume_music(self, delay: float) -> None:
-        if self.player is None:
+        if self.player is None and self.computer is None:
             return
         if self._release:
             self._release.cancel()
-        self._release = asyncio.get_running_loop().call_later(delay, self.player.release)
+        self._release = asyncio.get_running_loop().call_later(delay, self._release_all)
+
+    def _release_all(self) -> None:
+        if self.player is not None:
+            self.player.release()
+        if self.computer is not None:
+            if self._unduck_guard:
+                self._unduck_guard.cancel()
+                self._unduck_guard = None
+            self._job(self.computer.unduck())
+
+    def _job(self, coro) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._jobs.add(task)
+        task.add_done_callback(self._jobs.discard)
 
     async def _broadcast(self, data: dict) -> None:
         for session in list(self.sessions):
