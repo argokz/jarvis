@@ -429,6 +429,27 @@ docker run -d --name homeassistant --restart=unless-stopped -e TZ=Asia/Almaty \
 «включи лампочку в зале» выполняется за 1–2 с без агента на Sonnet. Список устройств ядро
 перечитывает раз в 5 минут. Home Assistant недоступен — команды дому идут агенту, как раньше.
 
+### Календарь (Google)
+
+Календарь подключается к Home Assistant, ассистент читает его оттуда: ключи Google остаются в HA.
+
+1. [console.cloud.google.com](https://console.cloud.google.com): новый проект → APIs & Services →
+   включить **Google Calendar API**.
+2. OAuth consent screen: тип External, добавить себя в тестовые пользователи, затем **Publish app**.
+   Пока приложение в режиме тестирования, Google отзывает доступ через 7 дней.
+3. Credentials → Create credentials → OAuth client ID. Тип и адрес возврата возьмите из подсказки,
+   которую Home Assistant покажет на следующем шаге (обычно Web application и
+   `https://my.home-assistant.io/redirect/oauth`).
+4. Home Assistant: Настройки → Устройства и службы → Добавить интеграцию → **Google Calendar** →
+   ввести Client ID и Client secret → войти в Google. На вопросе о доступе выберите
+   **чтение и запись**, иначе ассистент сможет только читать.
+5. Календари появятся как `calendar.*` — ядро найдёт их само, перезапуск не нужен.
+
+Что умеет: «что у меня завтра», «когда созвон с клиникой», «добавь встречу в пятницу в 18:30 на
+полтора часа». Новые события идут в первый календарь, куда можно писать, или в
+`JARVIS_CALENDAR_DEFAULT` (название календаря). Удалять и переносить события ассистент не умеет —
+это делается в Google Календаре. Выключить: `JARVIS_CALENDAR=0`.
+
 ### Notion
 
 1. `notion.so/profile/integrations` → новая внутренняя интеграция → скопировать токен в `NOTION_TOKEN`.

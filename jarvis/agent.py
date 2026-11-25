@@ -21,7 +21,7 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import browser, files, music, pc, printing, registry, scenarios, schedule, screen
+from . import agenda, browser, files, music, pc, printing, registry, scenarios, schedule, screen
 from .config import Settings
 from .notion import Notion, NotionError
 from .store import Store
@@ -66,6 +66,11 @@ SYSTEM = """Ты — {name}, личный ассистент одного пол
 HOME_HINT = """- Умный дом: инструменты mcp__home__* управляют устройствами Home Assistant, которые \
 пользователь открыл ассистенту. Нужного устройства среди них нет — так и скажи, не выдумывай результат.
 """
+CALENDAR_HINT = """- Календарь: calendar_events — события за период (start — дата ГГГГ-ММ-ДД, days — сколько дней, \
+query — слова для поиска); calendar_add — добавить событие (время местное, ГГГГ-ММ-ДДTЧЧ:ММ; без времени — на \
+весь день; без конца — на час). «Завтра», «в пятницу» переводи в даты сам, от сегодняшней. Удалять и переносить \
+события нельзя — скажи, что это делается в Google Календаре.
+"""
 NOTION_HINT = """- Notion: notion_search и notion_read — найти и прочитать страницу; notion_append — дописать в \
 конец страницы{create}. Удалять и перезаписывать в Notion нельзя. Заметки по умолчанию — в vault; в Notion \
 пиши, только когда пользователь прямо назвал Notion.
@@ -108,6 +113,10 @@ MUSIC_HINT = """- Музыка: music_play — найти и включить п
 """
 
 
+def calendar_on(s: Settings) -> bool:
+    return bool(s.calendar and s.hass_url and s.hass_token)
+
+
 def integrations_hint(s: Settings, scheduler: bool = False, scenes: bool = False, tunes: bool = False,
                       web: bool = False) -> str:
     out = SCHEDULE_HINT if scheduler else ""
@@ -117,6 +126,7 @@ def integrations_hint(s: Settings, scheduler: bool = False, scenes: bool = False
     out += SCREEN_HINT if s.screen else ""
     out += BROWSER_HINT if web else ""
     out += HOME_HINT if s.hass_url and s.hass_token else ""
+    out += CALENDAR_HINT if calendar_on(s) else ""
     if s.pc_control:
         out += PC_HINT
     if s.notion_token:
@@ -136,6 +146,30 @@ def response_text(resp) -> str:
     if isinstance(resp, list):
         return "\n".join(str(b.get("text", "")) if isinstance(b, dict) else str(b) for b in resp)
     return str(resp or "")
+
+
+def calendar_tools(cal: "agenda.Calendars") -> list:
+    def guarded(fn):  # ошибки календаря — это ответ инструмента, а не падение хода
+        async def run(args):
+            try:
+                return _reply(await fn(args))
+            except agenda.CalendarError as e:
+                return _reply(f"Не получилось: {e}", is_error=True)
+        return run
+
+    events = tool("calendar_events", "События календаря за период. start — дата ГГГГ-ММ-ДД (пусто — сегодня); "
+                  "days — сколько дней (1–62); calendar — название календаря (пусто — все); query — слова "
+                  "для поиска (пусто — все события).",
+                  {"start": str, "days": int, "calendar": str, "query": str})(
+        guarded(lambda a: cal.events(a.get("start", ""), a.get("days") or 1, a.get("calendar", ""),
+                                     a.get("query", ""))))
+    add = tool("calendar_add", "Добавить событие в календарь. summary — название; start — ГГГГ-ММ-ДДTЧЧ:ММ "
+               "(местное время) или ГГГГ-ММ-ДД на весь день; end — так же, пусто — на час; calendar — "
+               "название (пусто — основной); description, location — по желанию.",
+               {"summary": str, "start": str, "end": str, "calendar": str, "description": str, "location": str})(
+        guarded(lambda a: cal.add(a.get("summary", ""), a.get("start", ""), a.get("end", ""),
+                                  a.get("calendar", ""), a.get("description", ""), a.get("location", ""))))
+    return [events, add]
 
 
 def _reply(text: str, is_error: bool = False) -> dict:
@@ -271,6 +305,8 @@ class Brain:
         self.tunes: music.Music | None = None           # задаёт ядро: музыка
         self.vault = settings.vault
         self.notion = Notion(settings.notion_token, settings.notion_parent) if settings.notion_token else None
+        self.calendars = (agenda.Calendars(settings.hass_url, settings.hass_token, settings.calendar_default)
+                          if calendar_on(settings) else None)
         registry.ensure_vault(self.vault)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._side: dict[str, float] = defaultdict(float)  # расходы хода помимо самого агента (браузер)
@@ -382,6 +418,8 @@ class Brain:
                               "title — заголовок, text — содержимое.", {"title": str, "text": str})(
                     guarded(lambda a: notion.create(a.get("title", "") or "Без названия", a.get("text", ""))))
                 tools.append(create)
+        if self.calendars:
+            tools += calendar_tools(self.calendars)
         if self.s.pc_control:
             tools += pc_tools(self.computer or pc.PC())
         if self.scheduler:
@@ -430,6 +468,8 @@ class Brain:
                 journal(f"открыт файл: {inp.get('path', '')} ({channel})")
             elif short == "capture_note":
                 journal(f"заметка в Inbox: {inp.get('title', '')} ({channel})")
+            elif short == "calendar_add":
+                journal(f"календарь: {inp.get('start', '')} {inp.get('summary', '')} ({channel})")
             elif short in ("notion_append", "notion_create"):
                 journal(f"Notion, {short}: {inp.get('title') or inp.get('page', '')} ({channel})")
             elif short in ("pc_open_url", "pc_youtube"):
