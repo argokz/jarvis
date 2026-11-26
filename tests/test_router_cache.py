@@ -66,7 +66,8 @@ async def test_stable_part_of_the_request_has_its_own_cache_point(made):
     r, client, _ = made()
     await say(r, "привет")
     kw = client.calls[0]
-    assert kw["system"][-1]["cache_control"] == {"type": "ephemeral"}   # инструменты и подсказка — отдельно от истории
+    # инструменты и подсказка — отдельно от истории и на час: после паузы первый ответ не читает их заново
+    assert kw["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert kw["cache_control"] == {"type": "ephemeral"}                # вторая точка идёт по концу истории
     assert time.strftime("%Y-%m-%d") not in kw["system"][0]["text"]     # время — только в реплике, не в подсказке
 
@@ -139,3 +140,66 @@ def test_journal_is_merged_into_the_database_file_and_indexed(tmp_path):
     for i in range(400):
         store.log("owner", "app", "user", payload="я" * 2000)
     assert (tmp_path / "j.db").stat().st_size > 500_000   # данные в самом файле базы, а не только в -wal
+
+
+# --- прогрев и часовой кэш -------------------------------------------------------------------------
+
+class WarmClient(Client):
+    def __init__(self, usage=None):
+        super().__init__(usage)
+        self.created = []
+
+        async def create(**kw):
+            self.created.append(kw)
+            return NS(usage=NS(input_tokens=5, output_tokens=0, cache_read_input_tokens=0,
+                               cache_creation_input_tokens=9000,
+                               cache_creation=NS(ephemeral_1h_input_tokens=9000, ephemeral_5m_input_tokens=0)))
+        self.messages = NS(stream=self._stream, create=create)
+
+
+async def test_prewarm_writes_the_same_prefix_once_and_counts_its_cost(made, tmp_path):
+    r, _, store = made()
+    client = WarmClient(usage=NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=9000,
+                                 cache_creation_input_tokens=0))
+    r._client = client
+    assert await r.prewarm() is True
+    kw = client.created[0]
+    assert kw["max_tokens"] == 0 and "cache_control" not in kw            # только постоянное начало, без истории
+    assert kw["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert await r.prewarm() is False                                    # кэш тёплый — второй раз не платим
+    await say(r, "привет")
+    # начало ответа совпадает с прогретым байт в байт, иначе прогрев бесполезен
+    assert client.calls[0]["system"] == kw["system"] and client.calls[0]["tools"] == kw["tools"]
+    assert await r.prewarm() is False                                    # ответ тоже освежил кэш
+    cost = pricing.cost("claude-haiku-5-5", {"input_tokens": 5, "cache_creation_input_tokens": 9000,
+                                             "cache_creation_1h_tokens": 9000})
+    assert cost == pytest.approx((5 * 0.10 + 9000 * 0.10 * 2.0) / 1e6, abs=1e-6)  # запись на час — вдвое дороже ввода
+    spent, turns = store.spent(0)
+    assert spent >= round(cost, 4) and turns == 1                       # прогрев — в расходах, но не ход
+
+
+async def test_prewarm_again_when_the_prefix_changed_or_expired(made, monkeypatch):
+    r, _, _ = made()
+    r._client = client = WarmClient()
+    await r.prewarm()
+    r.system = lambda *a, **k: "другая подсказка"                       # подсказка стала другой
+    assert await r.prewarm() is True
+    r._warm = (r._warm[0], r._warm[1] - 3600)                            # час прошёл — кэш остыл
+    assert await r.prewarm() is True and len(client.created) == 3
+
+
+async def test_five_minute_cache_when_asked(made):
+    r, client, _ = made()
+    r.s = replace(r.s, router_cache_ttl="5m")
+    await say(r, "привет")
+    assert client.calls[0]["system"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_prewarm_failure_is_quiet(made):
+    import anthropic
+    r, _, _ = made()
+
+    async def boom(**kw):
+        raise anthropic.APIConnectionError(request=None)
+    r._client = NS(messages=NS(create=boom))
+    assert await r.prewarm() is False

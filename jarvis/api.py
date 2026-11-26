@@ -260,6 +260,12 @@ async def journal(limit: int = 50, user: str = Depends(auth)):
     return [journal_event(e) for e in store.recent(min(limit, 500))]
 
 
+@app.get("/voice/timings")
+async def voice_timings(limit: int = 50, user: str = Depends(auth)):
+    """Сколько занимает голосовой ответ: медианы по стадиям за последние limit ответов и сами замеры."""
+    return store.timings(min(max(limit, 1), 500))
+
+
 @app.get("/confirmations")
 async def confirmations(user: str = Depends(auth)):
     return confirms.pending()

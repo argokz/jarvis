@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -125,6 +126,9 @@ class VoiceRouter:
         self._client = client
         self._background: set[asyncio.Task] = set()
         self._anchor: dict[str, int] = {}  # с какой записи журнала начинается история (см. _window)
+        self._warm: tuple[str, float] | None = None  # (отпечаток начала запроса, когда его последний раз читали)
+        self._warm_lock = asyncio.Lock()
+        self.last_usage: dict[str, int] = {}
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:
@@ -222,16 +226,55 @@ class VoiceRouter:
             self._anchor[user_id] = ids[-HISTORY_ROWS] if len(ids) > HISTORY_ROWS else (ids[0] if ids else 0)
         return rows[ids.index(self._anchor[user_id]):] if ids else []
 
-    async def respond(self, user_id: str, text: str, channel: str = "voice") -> AsyncIterator[str]:
-        """Отдаёт фрагменты ответа по мере генерации — их сразу можно озвучивать."""
+    async def _prefix(self) -> tuple[list[dict], list[dict], set[str], set[str]]:
+        """Постоянное начало запроса: подсказка и инструменты. Возвращает (system, tools, own, home_names)."""
         home = await self.home.context() if self.home else None
         home_tools, overview = home or ([], None)
-        home_names = {t["name"] for t in home_tools}
         pc_tools = pc.TOOLS if self.computer else []
         scenes = self.scenes.summary() if self.scenes else ""  # сценариев нет — нет и инструмента
         own_tools = [*(schedule.TOOLS if self.scheduler else []), *([scenarios.RUN_TOOL] if scenes else []),
                      *([self.tunes.tool()] if self.tunes else []), *pc_tools, *home_tools]
-        own = {t["name"] for t in own_tools}  # что роутер выполняет сам
+        # Инструменты и подсказка меняются редко — отдельная точка кэша: её читает любой следующий ход,
+        # даже когда история уже другая. Вторая точка (cache_control запроса) идёт по концу истории.
+        mark = {"type": "ephemeral", **({"ttl": "1h"} if self.s.router_cache_ttl == "1h" else {})}
+        system = [{"type": "text", "text": self.system(overview, scenes), "cache_control": mark}]
+        return system, [DELEGATE, *own_tools], {t["name"] for t in own_tools}, {t["name"] for t in home_tools}
+
+    def _remember_warm(self, system: list[dict], tools: list[dict]) -> None:
+        self._warm = (_digest(system, tools), time.monotonic())
+
+    async def prewarm(self, user_id: str = "owner") -> bool:
+        """Прогреть кэш, если начало запроса в нём, скорее всего, остыло. True — запрос был отправлен.
+
+        Повод — начало речи или подключение голосового клиента: пока человек договаривает, кэш успевает
+        записаться, и первый ответ после долгой паузы не читает ~10 тысяч токенов заново.
+        """
+        async with self._warm_lock:
+            try:
+                system, tools, _, _ = await self._prefix()
+            except Exception:  # дом недоступен и т. п. — прогрев не нужен ответу
+                log.exception("прогрев: не собралось начало запроса")
+                return False
+            ttl = 3600 if self.s.router_cache_ttl == "1h" else 300
+            if self._warm and self._warm[0] == _digest(system, tools) and time.monotonic() - self._warm[1] < ttl - 60:
+                return False
+            try:
+                resp = await self.client.messages.create(
+                    model=self.s.router_model, max_tokens=0, system=system, tools=tools,
+                    output_config={"effort": self.s.router_effort},
+                    messages=[{"role": "user", "content": "."}])
+            except (anthropic.APIError, TypeError) as e:
+                log.warning("прогрев кэша не удался: %r", e)
+                return False
+            self._remember_warm(system, tools)
+            used = pricing.add({}, getattr(resp, "usage", None))
+            self.store.log(user_id, "voice", "prewarm", "", {"cost_usd": pricing.cost(self.s.router_model, used),
+                                                             "tokens": used})
+            return True
+
+    async def respond(self, user_id: str, text: str, channel: str = "voice") -> AsyncIterator[str]:
+        """Отдаёт фрагменты ответа по мере генерации — их сразу можно озвучивать."""
+        system, tools, own, home_names = await self._prefix()  # own — что роутер выполняет сам
         # delegate — тоже в истории: иначе модель видит свой прошлый ответ «нашёл, записал» без вызова
         # рядом и в следующей реплике объявляет, что ничего не делала
         now = time.time()  # одно время и модели, и журналу: в истории реплика должна выглядеть так же
@@ -240,9 +283,6 @@ class VoiceRouter:
         spoken: list[str] = []
         used: dict[str, int] = {}  # токены всех запросов этого хода
         try:
-            # Инструменты и подсказка меняются редко — отдельная точка кэша: её читает любой следующий ход,
-            # даже когда история уже другая. Вторая точка (cache_control запроса) идёт по концу истории.
-            system = [{"type": "text", "text": self.system(overview, scenes), "cache_control": {"type": "ephemeral"}}]
             task: str | None = None
             for round_ in range(MAX_ROUNDS):
                 last = round_ == MAX_ROUNDS - 1
@@ -254,7 +294,7 @@ class VoiceRouter:
                         model=self.s.router_model,
                         max_tokens=2048,
                         system=system,
-                        tools=[DELEGATE, *own_tools],
+                        tools=tools,
                         **({"tool_choice": {"type": "none"}} if last else {}),  # последний запрос — только ответ
                         output_config={"effort": self.s.router_effort},
                         cache_control={"type": "ephemeral"},
@@ -266,6 +306,7 @@ class VoiceRouter:
                                 yield event.text
                         final = await stream.get_final_message()
                     pricing.add(used, getattr(final, "usage", None))
+                    self._remember_warm(system, tools)
                 except ValueError:
                     # ввод инструмента не разобрался как JSON — отдаём агенту исходную реплику
                     task = text
@@ -321,6 +362,7 @@ class VoiceRouter:
         finally:
             # цена и токены — перед текстом: запись журнала обрезается с конца
             spent = {"cost_usd": pricing.cost(self.s.router_model, used), "tokens": used} if any(used.values()) else {}
+            self.last_usage = dict(used)  # для замера стадий голосового ответа
             self.store.log(user_id, channel, "assistant", payload={**spent, "text": "".join(spoken).strip()})
 
     @staticmethod
@@ -404,3 +446,7 @@ class VoiceRouter:
         self._background.add(t)
         t.add_done_callback(self._background.discard)
 
+
+def _digest(system: list[dict], tools: list[dict]) -> str:
+    """Отпечаток начала запроса: другое начало — другая запись в кэше."""
+    return hashlib.sha256(json.dumps([system, tools], ensure_ascii=False, sort_keys=True).encode()).hexdigest()

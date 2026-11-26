@@ -184,6 +184,19 @@ class VoiceService:
                 self._unduck_guard = None
             self._job(self.computer.unduck())
 
+    def warm(self) -> None:
+        """Прогреть кэш быстрой модели в фоне. Ответ его не ждёт; лишний раз роутер ничего не отправит."""
+        prewarm = getattr(self.router, "prewarm", None)
+        if prewarm is None:
+            return
+
+        async def run():
+            try:
+                await prewarm()
+            except Exception:
+                log.exception("прогрев кэша")
+        self._job(run())
+
     def _job(self, coro) -> None:
         task = asyncio.get_running_loop().create_task(coro)
         self._jobs.add(task)
@@ -211,6 +224,8 @@ class VoiceService:
         """passive — фраза, пойманная без сигнала: отвечаем на обращение и на команду будильнику."""
         await session.send_json({"type": "start", "turn": turn})
         attended = called = False  # обратились к ассистенту; только позвали по имени
+        clock = asyncio.get_running_loop().time
+        marks: dict[str, float] = {"start": clock()}  # замер стадий: распознавание, модель, синтез
 
         def attend() -> None:
             nonlocal attended
@@ -225,6 +240,7 @@ class VoiceService:
                     raise SpeechError("Слишком длинная реплика — до 30 секунд.")
                 hint = {"hint": STT_HINT} if self.scheduler and self.scheduler.ringing() else {}
                 text = await self.speech.recognize(audio, fmt="lpcm", sample_rate=IN_RATE, **hint)
+                marks["stt"] = clock()
                 if not passive:
                     await session.send_json({"type": "transcript", "turn": turn, "text": text})
             text = (text or "").strip()
@@ -236,7 +252,7 @@ class VoiceService:
                 await self._say(session, turn, quick)
             elif text and not passive:
                 attend()
-                await self._answer(session, turn, text)
+                await self._answer(session, turn, text, marks)
             elif text:
                 command = self.wake.match(text) if self.wake else None
                 # фраза сценария, которому обращение по имени не нужно («спокойной ночи»)
@@ -258,7 +274,7 @@ class VoiceService:
                     if quick is not None:  # «Клод, стоп» звенящему будильнику — тоже без модели
                         await self._say(session, turn, quick)
                     else:
-                        await self._answer(session, turn, command)
+                        await self._answer(session, turn, command, marks)
         except asyncio.CancelledError:
             raise
         except SpeechError as e:
@@ -278,9 +294,12 @@ class VoiceService:
         if self.speech.enabled:
             await session.send_audio(await self.speech.synthesize(phrase), turn=turn)
 
-    async def _answer(self, session: "VoiceSession", turn: int, text: str) -> None:
+    async def _answer(self, session: "VoiceSession", turn: int, text: str, marks: dict | None = None) -> None:
         queue: asyncio.Queue = asyncio.Queue()
         synth: list[asyncio.Task] = []
+        clock = asyncio.get_running_loop().time
+        marks = marks if marks is not None else {"start": clock()}
+        marks["model"] = clock()
 
         async def sender():
             while (item := await queue.get()) is not None:
@@ -293,6 +312,7 @@ class VoiceService:
                 except SpeechError as e:
                     log.warning("TTS: %s", e)
                     continue
+                marks.setdefault("audio", clock())
                 await session.send_audio(pcm, turn=turn)
 
         def put(phrase: str):
@@ -308,6 +328,8 @@ class VoiceService:
                   else self.router.respond(OWNER, text, channel="voice"))
         try:
             async for chunk in source:
+                if chunk.strip():
+                    marks.setdefault("text", clock())
                 for phrase in splitter.feed(chunk):
                     put(phrase)
                 if out.done():  # отправка упала — дальше генерировать незачем
@@ -316,6 +338,7 @@ class VoiceService:
                 put(phrase)
             queue.put_nowait(None)
             await out
+            self._log_timing(marks, scene is not None)
         finally:
             for t in [out, *synth]:
                 if not t.done():
@@ -323,6 +346,21 @@ class VoiceService:
             for t in [out, *synth]:
                 with contextlib.suppress(BaseException):
                     await t
+
+    def _log_timing(self, marks: dict, scene: bool) -> None:
+        """Сколько заняла каждая стадия, в мс: распознавание, модель до первого слова, синтез первой фразы."""
+        ms = lambda a, b: round((marks[b] - marks[a]) * 1000) if a in marks and b in marks else None  # noqa: E731
+        used = {} if scene else getattr(self.router, "last_usage", {}) or {}
+        data = {"stt_ms": ms("start", "stt"), "model_ms": ms("model", "text"), "tts_ms": ms("text", "audio"),
+                "total_ms": ms("start", "audio"),
+                "cache": "сценарий" if scene else ("тёплый" if used.get("cache_read_input_tokens")
+                                                   and not used.get("cache_creation_input_tokens") else
+                                                   "записан" if used.get("cache_creation_input_tokens") else "нет")}
+        log.info("голос: распознавание %s мс, модель %s мс, синтез %s мс, всего %s мс, кэш %s",
+                 data["stt_ms"], data["model_ms"], data["tts_ms"], data["total_ms"], data["cache"])
+        store = getattr(self.router, "store", None)
+        if store is not None:
+            store.log(OWNER, "voice", "timing", "", data)
 
 
 class VoiceSession:
@@ -356,6 +394,7 @@ class VoiceSession:
         wake = self.service.wake.phrases if self.service.wake else []
         await self.send_json({"type": "hello", "tts": sp.enabled, "stt": sp.enabled, "sample_rate": sp.tts_rate,
                               "wake": wake})
+        self.service.warm()
         try:
             while True:
                 msg = await self.ws.receive()
@@ -377,6 +416,8 @@ class VoiceSession:
                     await self._cancel()
                 elif kind == "ping":
                     await self.send_json({"type": "pong"})
+                elif kind == "warm":  # клиент услышал начало речи: пока человек говорит, греем кэш модели
+                    self.service.warm()
                 elif kind == "subscribe":
                     self.quiet_followup = data.get("followup") is True
                     await self.service.subscribe(self)
