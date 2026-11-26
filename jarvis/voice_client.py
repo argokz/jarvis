@@ -35,7 +35,7 @@ class Config:
     vad_threshold: float = 0.5
     listen_timeout_ms: int = 5000          # ждать начала речи после wake word
     followup_ms: int = 5000                # после ответа слушать продолжение без wake word (0 — выкл.)
-    end_silence_ms: int = 800              # тишина, после которой реплика считается законченной
+    end_silence_ms: int = 500              # тишина, после которой реплика считается законченной
     max_utterance_ms: int = 25000
     preroll_frames: int = 4                # ~320 мс до начала речи, чтобы не съедать первый слог
     barge_in: str = "wake"                 # wake — перебивать только wake word; vad — любой речью (гарнитура)
@@ -51,7 +51,7 @@ class Config:
     # Слово активации в тексте («Джарвис, включи свет»): каждая услышанная фраза уходит ядру, отвечает
     # оно только на обращение. Работает, когда ядро прислало список слов в hello (своё распознавание).
     phrase_wake: bool = False
-    phrase_end_silence_ms: int = 700       # пауза после «Джарвис» перед командой не должна обрывать фразу
+    phrase_end_silence_ms: int = 600       # пауза после «Джарвис» перед командой не должна обрывать фразу
     # Детектор речи замечает фразу с опозданием, а имя стоит в самом её начале: на живой проверке от
     # «Джарвис, который час» доходило «Кторый час». Поэтому к фразе прикладывается звук до неё.
     phrase_preroll_frames: int = 20        # ~1,6 с
@@ -365,6 +365,8 @@ class Conversation:
             if speech:
                 self.started = True
                 self.utterance = list(self.preroll)
+                if not self.ringing:  # пока человек говорит, ядро успеет прогреть кэш модели
+                    await self.send(json.dumps({"type": "warm"}))
             else:
                 self.waited_ms += FRAME_MS
                 if self.waited_ms >= self.timeout_ms:
@@ -490,7 +492,9 @@ async def run(args) -> None:
     from websockets.asyncio.client import connect
 
     cfg = Config(wake_threshold=args.threshold, barge_in=args.barge_in, followup_ms=args.followup * 1000,
-                 debug=args.debug)
+                 debug=args.debug,
+                 end_silence_ms=int(os.getenv("JARVIS_END_SILENCE_MS") or Config.end_silence_ms),
+                 phrase_end_silence_ms=int(os.getenv("JARVIS_PHRASE_END_SILENCE_MS") or Config.phrase_end_silence_ms))
     headers = {"Authorization": f"Bearer {args.token}"}
     loop = asyncio.get_running_loop()
     frames: asyncio.Queue = asyncio.Queue(maxsize=200)

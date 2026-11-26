@@ -98,12 +98,33 @@ class Store:
     def spent(self, since: float) -> tuple[float, int]:
         """Сколько стоили ходы моделей (агент, быстрая модель) с момента since и сколько их было."""
         total, turns = 0.0, 0
-        for (payload,) in self.db.execute(
-                "SELECT payload FROM journal WHERE kind='assistant' AND ts>=? AND payload LIKE '%cost_usd%'", (since,)):
+        for kind, payload in self.db.execute(
+                "SELECT kind, payload FROM journal WHERE kind IN ('assistant','prewarm') AND ts>=? "
+                "AND payload LIKE '%cost_usd%'", (since,)):
             found = COST.search(payload)  # запись обрезается до 4000 знаков и может не быть целым JSON
-            if found and float(found[1]) > 0:
-                total, turns = total + float(found[1]), turns + 1
+            if found and float(found[1]) > 0:  # прогрев кэша — расход, но не ход
+                total, turns = total + float(found[1]), turns + (kind == "assistant")
         return round(total, 4), turns
+
+    def timings(self, limit: int = 50) -> dict:
+        """Замеры голосовых ответов (kind=timing): медиана каждой стадии и доля ответов с тёплым кэшем."""
+        rows = []
+        for ts, payload in self.db.execute(
+                "SELECT ts, payload FROM journal WHERE kind='timing' ORDER BY id DESC LIMIT ?", (limit,)):
+            try:
+                rows.append({"ts": ts, **json.loads(payload)})
+            except (TypeError, ValueError):
+                continue
+
+        def median(key: str) -> int | None:
+            vals = sorted(r[key] for r in rows if isinstance(r.get(key), (int, float)))
+            return vals[len(vals) // 2] if vals else None
+
+        model = [r for r in rows if r.get("cache") in ("тёплый", "записан", "нет")]
+        return {"count": len(rows),
+                "median_ms": {k: median(k) for k in ("stt_ms", "model_ms", "tts_ms", "total_ms")},
+                "warm_share": round(sum(r["cache"] == "тёплый" for r in model) / len(model), 2) if model else None,
+                "last": rows[:20]}
 
     def recent(self, limit: int = 50) -> list[dict]:
         cur = self.db.execute(

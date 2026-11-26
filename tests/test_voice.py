@@ -680,6 +680,7 @@ async def test_client_beeps_and_listens_when_only_the_name_was_said(named):
     await feed(c, det, "sss...")
     assert c.state == WAITING and c.turn == 2
     # вторая запись — уже обычная реплика: метка passive стоит только перед первой
+    sent = [x for x in sent if isinstance(x, bytes) or json.loads(x)["type"] != "warm"]  # прогрев — отдельно
     assert [x if isinstance(x, bytes) else json.loads(x)["type"] for x in sent][::2] == ["passive", sent[2]]
     assert len(sent) == 3 and isinstance(sent[1], bytes)
 

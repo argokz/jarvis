@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from types import SimpleNamespace as NS
 
@@ -16,11 +17,27 @@ CHROME, VLC = "org.mpris.MediaPlayer2.chromium.instance42", "org.mpris.MediaPlay
 class Shell:
     """Поддельные wpctl и gdbus: помнит громкость и состояние плееров."""
 
-    def __init__(self, volume=0.3, muted=False, players=None):
+    def __init__(self, volume=0.3, muted=False, players=None, streams=None):
         self.volume, self.muted, self.players, self.cmds = volume, muted, players or {}, []
+        # звуковые потоки PipeWire: id → {"name", "binary", "volume", "muted", "cls"}
+        self.streams = streams or {}
 
     async def __call__(self, *a):
         self.cmds.append(a)
+        if a == ("pw-dump",):
+            return json.dumps([{"id": int(i), "type": "PipeWire:Interface:Node", "info": {"props": {
+                "media.class": st.get("cls", "Stream/Output/Audio"), "application.name": st["name"],
+                "application.process.binary": st.get("binary", "")}}} for i, st in self.streams.items()]
+                + [{"id": 1, "type": "PipeWire:Interface:Client", "info": {"props": {}}}])
+        if a[:2] in (("wpctl", "get-volume"), ("wpctl", "set-volume"), ("wpctl", "set-mute")) and a[2] in self.streams:
+            st = self.streams[a[2]]
+            if a[1] == "get-volume":
+                return f"Volume: {st['volume']:.2f}" + (" [MUTED]" if st.get("muted") else "") + "\n"
+            if a[1] == "set-volume":
+                st["volume"] = float(a[3])
+            else:
+                st["muted"] = a[3] == "1"
+            return ""
         if a[:2] == ("wpctl", "get-volume"):
             return f"Volume: {self.volume:.2f}" + (" [MUTED]" if self.muted else "") + "\n"
         if a[:2] == ("wpctl", "set-volume"):
@@ -304,7 +321,9 @@ async def test_agent_tools_run_the_same_commands_and_report_errors():
                                                        "pc_notify"]
     assert volume.input_schema["properties"]["action"]["enum"] == list(pc.VOLUME_ACTIONS)
     ok = await volume.handler({"action": "set", "value": 55})
-    assert ok == {"content": [{"type": "text", "text": "Громкость 55%"}]} and sh.volume == pytest.approx(0.55)
+    assert ok == {"content": [{"type": "text", "text": "Музыка и видео сейчас не играют, поэтому изменил общую "
+                                                       "громкость. Громкость 55%"}]}
+    assert sh.volume == pytest.approx(0.55)
     bad = await media.handler({"action": "pause"})
     assert bad["is_error"] is True and "нет запущенных плееров" in bad["content"][0]["text"]
 

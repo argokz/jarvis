@@ -46,6 +46,12 @@ class Settings:
     calendar: bool = field(default_factory=lambda: os.getenv("JARVIS_CALENDAR", "1").strip().lower()
                            not in ("", "0", "false", "no", "off"))
     calendar_default: str = field(default_factory=lambda: os.getenv("JARVIS_CALENDAR_DEFAULT", ""))
+    # Пока ассистент слушает и говорит, звук браузеров и плееров — в столько раз тише (0 или 1 — не трогать)
+    media_duck: float = field(default_factory=lambda: float(os.getenv("JARVIS_MEDIA_DUCK", "0.3") or 0))
+    # Сколько хранить в кэше постоянное начало запроса быстрой модели: 1h — дольше тёплый после паузы
+    # (запись в 2 раза дороже ввода), 5m — как раньше (в 1,25 раза)
+    router_cache_ttl: str = field(default_factory=lambda: "5m" if os.getenv("JARVIS_ROUTER_CACHE_TTL", "1h")
+                                  .strip().lower() == "5m" else "1h")
     # Notion: токен внутренней интеграции и страница, под которой создавать новые
     notion_token: str = field(default_factory=lambda: os.getenv("NOTION_TOKEN", ""))
     notion_parent: str = field(default_factory=lambda: os.getenv("NOTION_PARENT_PAGE", ""))

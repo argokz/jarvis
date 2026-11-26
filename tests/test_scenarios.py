@@ -252,7 +252,7 @@ async def test_steps_run_in_order_and_only_say_is_spoken(w):
     assert await collect(w.s.run(w.s.get("Я дома"), "voice")) == ["С возвращением."]
     assert w.home.calls == [("intent__HassTurnOn", {"name": "Торшер"}),
                             ("intent__HassTurnOff", {"name": "Свет", "area": "Зал"})]
-    assert w.pc.calls == [("pc_volume", {"action": "set", "value": 30})]
+    assert w.pc.calls == [("pc_volume", {"target": "system", "action": "set", "value": 30})]
     assert w.notes == ["сценарий «Я дома» (voice)"]
 
 
@@ -341,7 +341,7 @@ async def test_scheduled_scenario_runs_once_at_its_time(w):
     assert w.pc.calls == [] and heard == []                   # вчерашнее 7:30 было больше десяти минут назад
     w.at(7, 30, 3)
     await w.tick()
-    assert w.pc.calls == [("pc_volume", {"action": "set", "value": 20})] and heard == ["Доброе утро."]
+    assert w.pc.calls == [("pc_volume", {"target": "system", "action": "set", "value": 20})] and heard == ["Доброе утро."]
     assert w.notifier.sent == []                              # фразу услышали — сообщение не нужно
     assert w.journal("tool") == [("schedule", "scenario_run", '{"name": "Утро"}')]
     for second in (8, 13, 59):

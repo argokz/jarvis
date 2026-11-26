@@ -4,7 +4,7 @@ import { channelName, kindName, shortPath, time, toolName } from "../lib/format"
 import { refreshAll, resolveConfirmation, scheduleAction, state } from "../lib/state";
 
 // реплики — в чате; результаты инструментов нужны модели, а не ленте
-const feed = computed(() => state.journal.filter((j) => !["user", "assistant", "tool_result"].includes(j.kind)));
+const feed = computed(() => state.journal.filter((j) => !["user", "assistant", "tool_result", "timing", "prewarm"].includes(j.kind)));
 const icon = (k: string) =>
   ({ tool: "🔧", denied: "⛔", error: "❗", confirm_asked: "❓", confirm_resolved: "✔️" })[k] ?? "•";
 

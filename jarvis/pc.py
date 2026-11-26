@@ -8,6 +8,8 @@ YouTube или Яндекс Музыки во вкладке. Включаетс
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -22,6 +24,12 @@ TIMEOUT = 3.0
 SEARCH_TIMEOUT = 15.0  # поиск видео идёт в интернет
 
 VOLUME_ACTIONS = ("get", "set", "up", "down", "mute", "unmute")
+VOLUME_TARGETS = ("media", "system")
+# Чьи звуковые потоки считаются «музыкой и видео»: браузеры и плееры. Голос ассистента сюда не входит,
+# поэтому «сделай музыку тише» не трогает ни его, ни общую громкость.
+MEDIA_APPS = re.compile(r"firefox|librewolf|chrom|brave|yandex|vivaldi|opera|edge|mpv|vlc|spotify|rhythmbox|"
+                        r"celluloid|totem|showtime|audacious|clementine|strawberry|elisa|lollypop|amberol|kodi|"
+                        r"smplayer|haruna|deadbeef|cmus|mpd", re.I)
 MEDIA_ACTIONS = {"play": "Play", "pause": "Pause", "toggle": "PlayPause", "next": "Next", "previous": "Previous",
                  "stop": "Stop"}
 STATUS = {"Playing": "играет", "Paused": "на паузе", "Stopped": "остановлен"}
@@ -29,13 +37,17 @@ STATUS = {"Playing": "играет", "Paused": "на паузе", "Stopped": "о
 # Описания для обеих моделей: быстрый роутер получает их как есть, агент — через свой MCP-сервер.
 VOLUME_TOOL = {
     "name": "pc_volume",
-    "description": "Громкость звука на компьютере. action: get — узнать, set — установить value процентов, "
+    "description": "Громкость на компьютере. action: get — узнать, set — установить value процентов, "
                    "up / down — прибавить или убавить на value процентов (по умолчанию 10), mute / unmute — "
-                   "выключить или вернуть звук.",
+                   "выключить или вернуть звук. target: media (по умолчанию) — музыка и видео: музыка "
+                   "ассистента, браузеры, плееры; голос ассистента при этом не меняется. system — общая "
+                   "громкость компьютера, только если пользователь прямо сказал «общую», «системную», "
+                   "«всего компьютера».",
     "input_schema": {
         "type": "object",
         "properties": {"action": {"type": "string", "enum": list(VOLUME_ACTIONS)},
-                       "value": {"type": "integer", "minimum": 0, "maximum": 100}},
+                       "value": {"type": "integer", "minimum": 0, "maximum": 100},
+                       "target": {"type": "string", "enum": list(VOLUME_TARGETS)}},
         "required": ["action"],
     },
 }
@@ -116,10 +128,13 @@ class PC:
     def __init__(self, run=_run, opener=files.open_path, ytdlp=find_ytdlp, player=None):
         self._run, self._open, self._ytdlp = run, opener, ytdlp
         self.player = player  # музыка ассистента (music.Player): ей команды достаются первой
+        self._ducked: dict[str, float] = {}  # приглушённые на время разговора потоки: id → громкость до этого
+        self._duck_factor = 1.0
+        self._duck_lock = asyncio.Lock()
 
     async def call(self, name: str, args: dict) -> str:
         if name == "pc_volume":
-            return await self.volume(str(args.get("action", "")), args.get("value"))
+            return await self.volume(str(args.get("action", "")), args.get("value"), str(args.get("target") or "media"))
         if name == "pc_media":
             return await self.media(str(args.get("action", "")))
         if name == "pc_open_url":
@@ -139,21 +154,119 @@ class PC:
         level = f"Громкость {round(float(m[1]) * 100)}%"
         return level + ", звук выключен" if "MUTED" in out else level
 
-    async def volume(self, action: str, value=None) -> str:
+    @staticmethod
+    def _amount(action: str, value) -> int | None:
         if action not in VOLUME_ACTIONS:
             raise PCError(f"action должен быть одним из: {', '.join(VOLUME_ACTIONS)}")
+        if action not in ("set", "up", "down"):
+            return None
+        if value is None and action == "set":
+            raise PCError("для set нужно value — проценты от 0 до 100")
+        try:
+            return max(0, min(100, int(STEP if value is None else value)))
+        except (TypeError, ValueError) as e:
+            raise PCError("value должен быть целым числом процентов") from e
+
+    async def volume(self, action: str, value=None, target: str = "system") -> str:
+        """target=media — музыка и видео отдельно от остального; system — общая громкость."""
+        if target not in VOLUME_TARGETS:
+            raise PCError(f"target должен быть одним из: {', '.join(VOLUME_TARGETS)}")
+        pct = self._amount(action, value)
+        if target == "media":
+            player = self.player if self.player is not None and getattr(self.player, "active", False) else None
+            streams = await self.media_streams()
+            if player or streams:
+                return await self._media_volume(action, pct, player, streams)
         if action in ("set", "up", "down"):
-            if value is None and action == "set":
-                raise PCError("для set нужно value — проценты от 0 до 100")
-            try:
-                pct = max(0, min(100, int(STEP if value is None else value)))
-            except (TypeError, ValueError) as e:
-                raise PCError("value должен быть целым числом процентов") from e
             arg = f"{pct}%" + {"set": "", "up": "+", "down": "-"}[action]
             await self._run("wpctl", "set-volume", "-l", "1.0", SINK, arg)  # -l 1.0: не выше 100%
         elif action in ("mute", "unmute"):
             await self._run("wpctl", "set-mute", SINK, "1" if action == "mute" else "0")
-        return await self._volume()
+        level = await self._volume()
+        if target == "media":
+            return "Музыка и видео сейчас не играют. Общая громкость: " + level[len("Громкость "):] \
+                if action == "get" else "Музыка и видео сейчас не играют, поэтому изменил общую громкость. " + level
+        return level
+
+    # --- музыка и видео отдельно от общей громкости ----------------------------------------------
+    async def media_streams(self) -> list[dict]:
+        """Звуковые потоки браузеров и плееров в PipeWire: [{id, name}]. Нет pw-dump — пусто."""
+        try:
+            nodes = json.loads(await self._run("pw-dump"))
+        except (PCError, ValueError):
+            return []
+        found = []
+        for node in nodes if isinstance(nodes, list) else []:
+            props = ((node or {}).get("info") or {}).get("props") or {}
+            if node.get("type") != "PipeWire:Interface:Node" or props.get("media.class") != "Stream/Output/Audio":
+                continue
+            binary = str(props.get("application.process.binary") or "")
+            name = str(props.get("application.name") or binary or props.get("node.name") or "")
+            if binary == "ffplay" or name.startswith("Jarvis"):  # своя музыка управляется плеером
+                continue
+            if MEDIA_APPS.search(f"{binary} {name}"):
+                found.append({"id": str(node["id"]), "name": name or binary})
+        return found
+
+    async def _stream_volume(self, node: str) -> tuple[float, bool]:
+        out = await self._run("wpctl", "get-volume", node)
+        m = re.search(r"([\d.]+)", out)
+        if not m:
+            raise PCError(f"не понял ответ wpctl: {out.strip()[:80]}")
+        return float(m[1]), "MUTED" in out
+
+    async def _media_volume(self, action: str, pct: int | None, player, streams: list[dict]) -> str:
+        parts = []
+        if player is not None:
+            if pct is not None:
+                player.set_level(pct if action == "set" else player.level + (pct if action == "up" else -pct))
+            elif action in ("mute", "unmute"):
+                player.set_level(muted=action == "mute")
+            parts.append(f"музыка ассистента {player.describe_level()}")
+        async with self._duck_lock:
+            for st in streams:
+                node = st["id"]
+                try:
+                    current, muted = await self._stream_volume(node)
+                    real = self._ducked.get(node, current)  # приглушён ради ассистента — считаем от прежней
+                    if pct is not None:
+                        real = min(1.0, max(0.0, pct / 100 if action == "set"
+                                            else real + (pct if action == "up" else -pct) / 100))
+                        if node in self._ducked:
+                            self._ducked[node] = real  # после разговора вернётся уже новая громкость
+                        await self._run("wpctl", "set-volume", node,
+                                        f"{real * (self._duck_factor if node in self._ducked else 1):.3f}")
+                    elif action in ("mute", "unmute"):
+                        muted = action == "mute"
+                        await self._run("wpctl", "set-mute", node, "1" if muted else "0")
+                    parts.append(f"{st['name']} {round(real * 100)}%" + (", без звука" if muted else ""))
+                except PCError:
+                    continue  # поток исчез, пока мы с ним работали
+        if not parts:
+            return "Музыка и видео сейчас не играют."
+        return "Громкость: " + "; ".join(parts)
+
+    async def duck(self, factor: float) -> None:
+        """Пока ассистент слушает и говорит: звук браузеров и плееров — в factor раз тише."""
+        if not 0 < factor < 1:
+            return
+        async with self._duck_lock:
+            self._duck_factor = factor
+            for st in await self.media_streams():
+                node = st["id"]
+                if node in self._ducked:
+                    continue
+                with contextlib.suppress(PCError):
+                    level, _ = await self._stream_volume(node)
+                    self._ducked[node] = level
+                    await self._run("wpctl", "set-volume", node, f"{level * factor:.3f}")
+
+    async def unduck(self) -> None:
+        async with self._duck_lock:
+            ducked, self._ducked = self._ducked, {}
+            for node, level in ducked.items():
+                with contextlib.suppress(PCError):  # поток мог закончиться за время разговора
+                    await self._run("wpctl", "set-volume", node, f"{level:.3f}")
 
     # --- плееры -------------------------------------------------------------
     async def _gdbus(self, dest: str, path: str, method: str, *args: str) -> str:
