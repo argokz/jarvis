@@ -18,6 +18,8 @@ log = logging.getLogger("jarvis.homepanel")
 TIMEOUT = 10.0   # облачные устройства отвечают не сразу
 ASSISTANT = "conversation"   # так Home Assistant называет встроенный Assist; его же видит MCP-сервер
 # Изменился состав дома (новое устройство, переименование, другая комната) — клиент перечитывает снимок.
+# Колонки, которые произносят текст через media_player.play_media с типом «text» (так делает YandexStation)
+SPEAKERS = frozenset({"yandex_station"})
 REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_registry_updated")
 RELOAD_PAUSE = 1.5   # перезагрузка службы шлёт десятки таких событий подряд — ждём, пока стихнет
 
@@ -117,6 +119,7 @@ def item(state: dict, entry: dict, device: dict, area: str, exposed: bool) -> di
         "area_id": entry.get("area_id") or device.get("area_id") or "",
         "aliases": sorted(str(a) for a in entry.get("aliases") or []),  # как ещё называть устройство голосом
         "renamed": bool(entry.get("name")),  # имя задано владельцем, а не производителем
+        "speaks": domain == "media_player" and entry.get("platform") in SPEAKERS,  # умеет произнести текст
         "unit": attrs.get("unit_of_measurement") or "",
     }
     if domain == "light" and attrs.get("brightness") is not None:
@@ -333,6 +336,25 @@ class Panel:
             await sleep(delay)
             delay = min(delay * 2, 30.0)
 
+    async def say(self, entity_id: str, text: str) -> dict:
+        """Произнести текст на колонке. Только там, где это умеет сама колонка (см. SPEAKERS)."""
+        if entity_id not in self._index:
+            await self.overview()
+        known = self._index.get(entity_id)
+        if known is None or not entity_id.startswith("media_player.") or known[0].get("platform") not in SPEAKERS:
+            raise PanelError("эта колонка не умеет произносить текст")
+        phrase = clean(text, 300, "фраза")
+        if not phrase:
+            raise PanelError("нечего говорить")
+        await self._rest("POST", "/api/services/media_player/play_media",
+                         json={"entity_id": entity_id, "media_content_type": "text", "media_content_id": phrase})
+        return {"ok": True}
+
+    def allowed(self, entity_id: str) -> bool:
+        """Открыто ли устройство ассистенту: этим же списком ограничен «простой» профиль."""
+        known = self._index.get(entity_id)
+        return bool(known and known[3])
+
     async def reload(self, entry_id: str) -> dict:
         """Опросить службу производителя заново: так появляются устройства, добавленные в её приложении."""
         if not entry_id.isalnum():
@@ -417,3 +439,10 @@ def describe(step: dict, texts: dict) -> dict:
     elif kind not in ("external", "external_done", "progress", "show_progress"):
         out["text"] = out["text"] or "Этот шаг нужно пройти в самом Home Assistant."
     return out
+
+
+def simple_view(overview: dict) -> dict:
+    """Дом для «простого» профиля: только то, что владелец открыл ассистенту, без настроек и учётных записей."""
+    items = [i for i in overview["items"] if i["control"] and i["exposed"] and not i["secondary"]]
+    return {"url": "", "areas": sorted({i["area"] for i in items if i["area"]}), "rooms": [], "items": items,
+            "integrations": [], "discovered": []}

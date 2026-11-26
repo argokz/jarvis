@@ -14,9 +14,9 @@ async function save() {
   check.value = "Проверяю…";
   try {
     const probe = new Api(() => form);
-    const h = await probe.health();
-    await probe.projects(); // проверка токена
-    check.value = `✅ Подключено. Модель агента: ${h.model}`;
+    await probe.health();
+    const who = await probe.me(); // проверка токена; подходит и «простому» профилю
+    check.value = who.role === "owner" ? "✅ Подключено." : "✅ Подключено: простой профиль.";
     updateConn(form);
     emit("saved");
   } catch (e) {
@@ -59,13 +59,13 @@ async function reset() {
       <div v-if="check" class="small">{{ check }}</div>
     </form>
 
-    <div class="card">
+    <div v-if="state.role === 'owner'" class="card">
       <b>Разговор</b>
       <p class="small muted">Сессия общая для всех устройств. Новый разговор не стирает память в vault.</p>
       <button :disabled="!state.conn.token" @click="reset">Начать новый разговор</button>
     </div>
 
-    <div class="card small">
+    <div v-if="state.role === 'owner'" class="card small">
       <b>Подсказки</b>
       <ul class="muted">
         <li>С телефона удобнее всего через Tailscale: <code>tailscale serve</code> даёт HTTPS-адрес ядра.</li>

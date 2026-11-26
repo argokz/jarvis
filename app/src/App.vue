@@ -8,6 +8,7 @@ import ProjectsView from "./components/ProjectsView.vue";
 import QuickView from "./components/QuickView.vue";
 import ScenariosView from "./components/ScenariosView.vue";
 import SettingsView from "./components/SettingsView.vue";
+import SimpleView from "./components/SimpleView.vue";
 import TasksView from "./components/TasksView.vue";
 import { desktop } from "./lib/desktop";
 import { adoptLocal, connect, scheduleAction, state, type Tab } from "./lib/state";
@@ -37,6 +38,7 @@ onMounted(async () => {
 
 <template>
   <QuickView v-if="quick" />
+  <SimpleView v-else-if="state.role === 'simple'" />
   <div v-else class="shell">
     <div class="body">
     <header class="top">

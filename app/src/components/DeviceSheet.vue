@@ -6,16 +6,16 @@
 import { computed, reactive, ref, watch } from "vue";
 import type { HomeItem } from "../lib/api";
 import { commandName, deviceStep, iconOf, isPress, levelOf, stateText } from "../lib/home";
-import { createCommand, homeAct, homeExpose, homeSettings, state } from "../lib/state";
+import { createCommand, homeAct, homeExpose, homeSay, homeSettings, state } from "../lib/state";
 
 const props = defineProps<{ item: HomeItem }>();
 const emit = defineEmits<{ close: [] }>();
 
 const NEW = "__new__";
-const form = reactive({ name: "", room: "", newRoom: "", alias: "", phrase: "", turn: "on" as "on" | "off" });
+const form = reactive({ name: "", room: "", newRoom: "", alias: "", phrase: "", turn: "on" as "on" | "off", say: "" });
 const note = ref("");
 const busy = ref(false);
-const assistant = computed(() => state.report?.name ?? "Джарвис");
+const assistant = computed(() => state.report?.name || state.assistant || "Джарвис");
 const level = computed(() => levelOf(props.item));
 const rooms = computed(() => state.home?.rooms ?? []);
 const aliases = computed(() => props.item.aliases ?? []);
@@ -68,6 +68,15 @@ const addPhrase = () => {
     return error;
   }, `Команда сохранена: «${assistant.value}, ${phrase}»`);
 };
+const say = () => {
+  const text = form.say.trim();
+  if (!text) return;
+  void run(async () => {
+    const error = await homeSay(props.item, text);
+    if (!error) form.say = "";
+    return error;
+  }, "Сказано");
+};
 function slide(e: Event) {
   if (level.value) void homeAct(props.item, level.value.action, Number((e.target as HTMLInputElement).value));
 }
@@ -107,6 +116,14 @@ function warm(e: Event) {
         </label>
       </div>
       <div v-else-if="item.control" class="block small muted">Устройство не на связи.</div>
+
+      <form v-if="item.speaks && item.available" class="block" @submit.prevent="say">
+        <b>Сказать на колонке</b>
+        <div class="row">
+          <input v-model="form.say" placeholder="Например: ужин готов" maxlength="300" aria-label="Что сказать на колонке" />
+          <button :disabled="busy || !form.say.trim()">Сказать</button>
+        </div>
+      </form>
 
       <div v-if="item.control" class="block">
         <b>Голос</b>

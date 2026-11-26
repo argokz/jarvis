@@ -10,12 +10,15 @@ import { Gesture, levelAt, LONG_MS } from "../lib/gesture";
 import { type Before, iconOf, isPress, levelOf, shortName, snapshot, stateText, tileState, tone } from "../lib/home";
 import { homeAct, state } from "../lib/state";
 
-const props = defineProps<{ item: HomeItem; short?: boolean; room?: boolean }>();
+// plain — без карточки и настроек (простой профиль); big — крупная плитка
+const props = defineProps<{ item: HomeItem; short?: boolean; room?: boolean; plain?: boolean; big?: boolean }>();
 
 const gesture = new Gesture();
 let held: { before: Before; rect: DOMRect; timer: ReturnType<typeof setTimeout> } | null = null;
 const dragging = ref(false);
-const open = () => (state.sheet = props.item.entity_id);
+const open = () => {
+  if (!props.plain) state.sheet = props.item.entity_id;
+};
 
 function tap() {
   const i = props.item;
@@ -71,7 +74,7 @@ function fill(): string {
 
 <template>
   <div
-    class="tile" :class="[tone(item), { on: item.on, gone: !item.available, waits: state.homePending[item.entity_id], drag: dragging }]"
+    class="tile" :class="[tone(item), { on: item.on, gone: !item.available, waits: state.homePending[item.entity_id], drag: dragging, big }]"
     :style="{ '--fill': fill() }"
     role="button" tabindex="0" :aria-pressed="item.on ?? undefined" :aria-label="`${item.name}: ${stateText(item) || 'нажать'}`"
     @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="cancel"
@@ -82,8 +85,10 @@ function fill(): string {
       <b>{{ short ? shortName(item, true) : item.name }}</b>
       <small>{{ [tileState(item), room ? item.area : ""].filter(Boolean).join(" · ") }}</small>
     </span>
-    <span v-if="item.exposed" class="voice" title="Управляется голосом" aria-label="Управляется голосом">🎙</span>
-    <button class="more" aria-label="Подробности и настройки" @pointerdown.stop @keydown.stop @click.stop="open">⋯</button>
+    <template v-if="!plain">
+      <span v-if="item.exposed" class="voice" title="Управляется голосом" aria-label="Управляется голосом">🎙</span>
+      <button class="more" aria-label="Подробности и настройки" @pointerdown.stop @keydown.stop @click.stop="open">⋯</button>
+    </template>
   </div>
 </template>
 
@@ -98,6 +103,10 @@ function fill(): string {
   touch-action: pan-y; /* по вертикали — прокрутка страницы, по горизонтали — наш жест */
   transition: background var(--motion), border-color var(--motion), opacity var(--motion), transform var(--motion);
 }
+.tile.big { min-height: 116px; padding: 16px; gap: 14px; }
+.tile.big .icon { font-size: 38px; }
+.tile.big .text b { font-size: 18px; }
+.tile.big .text small { font-size: 15px; }
 .tile.light { --tone: var(--light); }
 .tile.ai { --tone: var(--ai); }
 .tile.heat { --tone: var(--heat); }

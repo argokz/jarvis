@@ -33,6 +33,9 @@ class Settings:
     session_idle: float = field(default_factory=lambda: float(os.getenv("JARVIS_SESSION_IDLE_MIN", "30")) * 60)
     # Клиенты
     api_token: str = field(default_factory=lambda: os.getenv("JARVIS_API_TOKEN", ""))
+    # Токен «простого» профиля (гости, дети, планшет на стене): видит и переключает только устройства,
+    # открытые ассистенту; чата, настроек и журнала у него нет. Пусто — профиля нет.
+    simple_token: str = field(default_factory=lambda: os.getenv("JARVIS_SIMPLE_TOKEN", "").strip())
     telegram_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     telegram_allowed: frozenset[int] = field(default_factory=lambda: _ids(os.getenv("TELEGRAM_ALLOWED_IDS", "")))
     # Интеграции
