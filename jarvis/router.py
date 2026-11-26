@@ -142,7 +142,9 @@ class VoiceRouter:
                  "найти и прочитать что-то в интернете, проверить цену, расписание или новости на сайте"),
                 (via_agent, "управлению умным домом",
                  "включить, выключить или узнать состояние света, розеток, климата и других устройств в доме"),
-                (bool(self.s.notion_token), "страницам Notion", "найти, прочитать или дополнить страницу в Notion")]
+                (bool(self.s.notion_token), "страницам Notion", "найти, прочитать или дополнить страницу в Notion"),
+                (bool(self.s.calendar and self.s.hass_url and self.s.hass_token), "календарю",
+                 "узнать, что запланировано, или добавить встречу в календарь")]
         on = [(c, h) for enabled, c, h in caps if enabled]
         return SYSTEM.format(
             name=self.s.assistant_name,
